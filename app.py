@@ -32,8 +32,9 @@ def conectar_google_sheets():
 # 3. Autenticação de Acesso
 USUARIOS = {
     "admin": "431360",
-    "marcelo": "431360",
+    "marcelo": "431360Fi",
     "pedro": "431360"
+    "marcio": "Mpve2804"
 }
 
 if "autenticado_fin" not in st.session_state:
