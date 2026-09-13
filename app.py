@@ -32,7 +32,7 @@ def conectar_google_sheets():
 # 3. Autenticação de Acesso
 USUARIOS = {
     "admin": "431360#In",
-    "marcelo": "431360In",
+    "marcelo": "431360Fi",
     "pedro.martinez": "431360",
     "manoel.iglesias": "431360",
     "marcio": "Mpve2804",
