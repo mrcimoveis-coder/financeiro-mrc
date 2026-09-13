@@ -33,10 +33,10 @@ def conectar_google_sheets():
 USUARIOS = {
     "admin": "431360#In",
     "marcelo": "431360Fi",
-    "pedro.martinez": "431360",
-    "manoel.iglesias": "431360",
+    "pedro.martinez": "431360xxx",
+    "manoel.iglesias": "431360xxx",
     "marcio": "Mpve2804",
-    "marcos.junior": "431360"
+    "marcos.junior": "431360xxx"
 }
 
 if "autenticado_fin" not in st.session_state:
