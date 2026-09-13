@@ -28,11 +28,11 @@ def conectar_google_sheets():
     client = gspread.authorize(credentials)
     return client.open_by_key("1WaIP5FJpudjKvOXw0pQe7YfJlTPrISAmaBDZswuCsxM").sheet1
 
-# 3. Autenticação de Acesso (Usuários Atualizados)
+# 3. Autenticação de Acesso
 USUARIOS = {
     "admin": "431360",
-    "marcelo": "431360Fi",
-    "pedro": "431360xx",
+    "marcelo": "431360",
+    "pedro": "431360",
     "marcio": "Mpve2804"
 }
 
@@ -173,9 +173,18 @@ with aba_lancamento:
         with c_l1:
             mes = st.selectbox("Mês de Referência *", ["JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO", "JULHO", "AGOSTO", "SETEMBRO", "OUTUBRO", "NOVEMBRO", "DEZEMBRO"])
             tipo_op = st.radio("Tipo de Operação *", ["Despesa", "Receita"], horizontal=True)
+            
+            # Lista atualizada de categorias de Despesas e Receitas
             categoria = st.selectbox("Categoria / Tipo *", [
+                # Despesas
                 "SALÁRIO", "COMERCIAL", "DESPESA ADM", "PRÓ-LABORE", "IMPOSTOS", 
-                "GESTÃO - TI", "BANCO", "RECEITA ALUGUEL", "RECEITA VENDA", "OUTRO"
+                "GESTÃO - TI", "BANCO", 
+                # Receitas
+                "RECEITA ALUGUEL", "RECEITA VENDA", 
+                "Renda de Seguro Incendio", "Renda de DVDB", 
+                "Renda de Juros de aplicação", "Renda Loft - Comissão", 
+                "Venda Imovel MRC", "Venda Imovel Torre Forte", 
+                "OUTRO"
             ])
             envolvido = st.text_input("Corretor / Envolvido", placeholder="Ex: PEDRO, CAIXINHA, MANOEL, MARCOS JR...")
         with c_l2:
