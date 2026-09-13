@@ -26,14 +26,13 @@ def conectar_google_sheets():
     
     credentials = Credentials.from_service_account_info(credenciais_dict, scopes=SCOPES)
     client = gspread.authorize(credentials)
-    # ID da planilha do Google Sheets inserido diretamente abaixo:
     return client.open_by_key("1WaIP5FJpudjKvOXw0pQe7YfJlTPrISAmaBDZswuCsxM").sheet1
 
-# 3. Autenticação de Acesso
+# 3. Autenticação de Acesso (Usuários Atualizados)
 USUARIOS = {
     "admin": "431360",
-    "marcelo": "431360Fi",
-    "pedro": "431360"
+    "marcelo": "431360",
+    "pedro": "431360",
     "marcio": "Mpve2804"
 }
 
