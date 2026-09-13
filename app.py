@@ -31,10 +31,12 @@ def conectar_google_sheets():
 
 # 3. Autenticação de Acesso
 USUARIOS = {
-    "admin": "431360",
-    "marcelo": "431360Fi",
-    "pedro": "431360xx",
-    "marcio": "Mpve2804"
+    "admin": "431360#In",
+    "marcelo": "431360In",
+    "pedro.martinez": "431360",
+    "manoel.iglesias": "431360",
+    "marcio": "Mpve2804",
+    "marcos.junior": "431360"
 }
 
 if "autenticado_fin" not in st.session_state:
@@ -164,7 +166,7 @@ with aba_dash:
                 st.info("Sem despesas cadastradas.")
                 
         with col_g2:
-            st.subheader("Evolução Mensal (Ordem Cronológica)")
+            st.subheader("Evolução de Receitas e Despesas")
             if not df.empty:
                 col_cor = "Tipo de Operação" if "Tipo de Operação" in df.columns else None
                 
@@ -188,6 +190,35 @@ with aba_dash:
                 
                 fig_mes.update_xaxes(categoryorder="array", categoryarray=ordem_cronologica)
                 st.plotly_chart(fig_mes, use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("📈 Resultado Líquido Mês a Mês (Receita − Despesa)")
+        
+        # Cálculo do Resultado Líquido
+        all_periods = df[["Periodo", "Mes_Ano_Label"]].drop_duplicates()
+        
+        df_rec_m = df[df["Tipo de Operação"] == "Receita"].groupby(["Periodo", "Mes_Ano_Label"])["Valor_Num"].sum().reset_index().rename(columns={"Valor_Num": "Receita"}) if "Tipo de Operação" in df.columns else pd.DataFrame(columns=["Periodo", "Mes_Ano_Label", "Receita"])
+        df_des_m = df[df["Tipo de Operação"] == "Despesa"].groupby(["Periodo", "Mes_Ano_Label"])["Valor_Num"].sum().reset_index().rename(columns={"Valor_Num": "Despesa"}) if "Tipo de Operação" in df.columns else df.groupby(["Periodo", "Mes_Ano_Label"])["Valor_Num"].sum().reset_index().rename(columns={"Valor_Num": "Despesa"})
+        
+        df_res_m = pd.merge(all_periods, df_rec_m, on=["Periodo", "Mes_Ano_Label"], how="left")
+        df_res_m = pd.merge(df_res_m, df_des_m, on=["Periodo", "Mes_Ano_Label"], how="left").fillna(0.0)
+        df_res_m["Resultado"] = df_res_m["Receita"] - df_res_m["Despesa"]
+        df_res_m["Situação"] = df_res_m["Resultado"].apply(lambda x: "Lucro" if x >= 0 else "Prejuízo")
+        df_res_m = df_res_m.sort_values("Periodo")
+        
+        ordem_res_cronologica = df_res_m["Mes_Ano_Label"].tolist()
+        
+        fig_res = px.bar(
+            df_res_m,
+            x="Mes_Ano_Label",
+            y="Resultado",
+            color="Situação",
+            color_discrete_map={"Lucro": "#2E7D32", "Prejuízo": "#C4001A"},
+            labels={"Mes_Ano_Label": "Mês/Ano", "Resultado": "Resultado Líquido (R$)"},
+            text_auto=".2f"
+        )
+        fig_res.update_xaxes(categoryorder="array", categoryarray=ordem_res_cronologica)
+        st.plotly_chart(fig_res, use_container_width=True)
 
 # --- ABA 2: PESQUISA E HISTÓRICO ---
 with aba_consulta:
@@ -289,7 +320,7 @@ with aba_editar:
             
             if item_sel:
                 idx = int(item_sel.split(" - ")[0])
-                linha_real = idx + 2  # Linha correspondente na planilha do Google Sheets
+                linha_real = idx + 2
                 dados_item = df.iloc[idx]
                 
                 st.markdown("---")
