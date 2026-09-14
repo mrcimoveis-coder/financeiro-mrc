@@ -293,10 +293,13 @@ with aba_lancamento:
                 except Exception as e:
                     st.error(f"Erro ao salvar: {e}")
 
-# --- ABA 4: EDITAR E EXCLUIR (TABELA COMPLETA + SELEÇÃO) ---
+# --- ABA 4: EDITAR E EXCLUIR (CLIQUE DIRETO NO REGISTRO) ---
 with aba_editar:
     st.subheader("Alterar ou Excluir Registro Financeiro")
     
+    if "item_para_editar" not in st.session_state:
+        st.session_state.item_para_editar = None
+
     if df.empty:
         st.info("Nenhum lançamento cadastrado para editar ou excluir.")
     else:
@@ -325,31 +328,52 @@ with aba_editar:
             df_edit = df_edit[df_edit["Histórico"].astype(str).str.lower().str.contains(busca_kw_ed.lower())]
             
         st.write(f"**Registros encontrados:** {len(df_edit)} | **Subtotal:** R$ {df_edit['Valor_Num'].sum():,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        
+        st.markdown("---")
+
         if df_edit.empty:
             st.warning("⚠️ Nenhum lançamento encontrado com os filtros selecionados.")
         else:
-            # 1. EXIBIÇÃO DA TABELA COMPLETA DOS REGISTROS ENCONTRADOS
-            cols_desejadas = [col_data, "Tipo de Operação", "Categoria", "Corretor / Envolvido", "Histórico", "Valor (R$)", "Status", "Observação"]
-            cols_existentes = [c for c in cols_desejadas if c in df_edit.columns]
-            st.dataframe(df_edit[cols_existentes], use_container_width=True, hide_index=True)
+            st.markdown("##### 📋 Clique no botão ✏️ Editar do lançamento que deseja alterar ou apagar:")
             
+            # Cabeçalho da Lista Interativa
+            h_c1, h_c2, h_c3, h_c4, h_c5, h_c6, h_c7 = st.columns([1.1, 0.9, 1.2, 1.2, 2.2, 1.2, 0.9])
+            h_c1.markdown("**Data**")
+            h_c2.markdown("**Tipo**")
+            h_c3.markdown("**Categoria**")
+            h_c4.markdown("**Envolvido**")
+            h_c5.markdown("**Histórico**")
+            h_c6.markdown("**Valor**")
+            h_c7.markdown("**Ação**")
             st.markdown("---")
-            st.markdown("##### ✏️ Escolha o lançamento que deseja editar ou excluir:")
-            
-            # 2. SELEÇÃO DIRETA DO ITEM DA LISTA FILTRADA
-            df_edit["ID_Item"] = df_edit.index.astype(str) + " - [" + df_edit[col_data].astype(str) + "] " + df_edit["Histórico"].astype(str) + " (" + df_edit["Valor (R$)"].astype(str) + ")"
-            
-            lista_opcoes = ["-- Selecione um registro da lista acima --"] + df_edit["ID_Item"].tolist()
-            item_sel = st.selectbox("Registro selecionado:", lista_opcoes, key="edit_select_item")
-            
-            if item_sel and not item_sel.startswith("--"):
-                idx = int(item_sel.split(" - ")[0])
+
+            # Linhas com botão de edição direto por item
+            for idx_df, row in df_edit.iterrows():
+                r_c1, r_c2, r_c3, r_c4, r_c5, r_c6, r_c7 = st.columns([1.1, 0.9, 1.2, 1.2, 2.2, 1.2, 0.9])
+                
+                r_c1.write(str(row.get(col_data, "")))
+                r_c2.write(str(row.get("Tipo de Operação", "")))
+                r_c3.write(str(row.get("Categoria", "")))
+                r_c4.write(str(row.get("Corretor / Envolvido", "")))
+                r_c5.write(str(row.get("Histórico", "")))
+                r_c6.write(str(row.get("Valor (R$)", "")))
+                
+                if r_c7.button("✏️ Editar", key=f"btn_edit_{idx_df}"):
+                    st.session_state.item_para_editar = idx_df
+                    st.rerun()
+
+        # FORMULÁRIO DE EDIÇÃO / EXCLUSÃO (Aparece ao clicar em ✏️ Editar)
+        if st.session_state.item_para_editar is not None:
+            idx = st.session_state.item_para_editar
+            if idx in df.index:
                 linha_real = idx + 2
                 dados_item = df.iloc[idx]
                 
                 st.markdown("---")
-                st.markdown(f"### ✏️ Formulário de Edição — Lançamento #{idx + 1}")
+                c_head1, c_head2 = st.columns([4, 1])
+                c_head1.markdown(f"### ✏️ Editando Registro #{idx + 1}: *{dados_item.get('Histórico', '')}* ({dados_item.get('Valor (R$)', '')})")
+                if c_head2.button("❌ Fechar Edição"):
+                    st.session_state.item_para_editar = None
+                    st.rerun()
                 
                 with st.form("form_editar_financeiro"):
                     col_ed1, col_ed2 = st.columns(2)
@@ -398,6 +422,7 @@ with aba_editar:
                             sheet.update_cell(linha_real, 8, nov_obs)
                             
                             st.success("✅ Lançamento financeiro atualizado com sucesso!")
+                            st.session_state.item_para_editar = None
                             st.rerun()
                         except Exception as e:
                             st.error(f"❌ Erro ao atualizar lançamento: {e}")
@@ -410,6 +435,7 @@ with aba_editar:
                         try:
                             sheet.delete_row(linha_real)
                             st.success("✅ Lançamento excluído com sucesso!")
+                            st.session_state.item_para_editar = None
                             st.rerun()
                         except Exception as e:
                             st.error(f"❌ Erro ao excluir lançamento: {e}")
