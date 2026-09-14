@@ -33,10 +33,10 @@ def conectar_google_sheets():
 USUARIOS = {
     "admin": "431360#In",
     "marcelo": "431360Fi",
-    "pedro.martinez": "431360xxx",
-    "manoel.iglesias": "431360xxx",
     "marcio": "Mpve2804",
-    "marcos.junior": "431360xxx"
+    "pedro.martinez": "431360",
+    "manoel.iglesias": "431360",
+    "marcos.junior": "431360"
 }
 
 if "autenticado_fin" not in st.session_state:
@@ -194,7 +194,6 @@ with aba_dash:
         st.markdown("---")
         st.subheader("📈 Resultado Líquido Mês a Mês (Receita − Despesa)")
         
-        # Cálculo do Resultado Líquido
         all_periods = df[["Periodo", "Mes_Ano_Label"]].drop_duplicates()
         
         df_rec_m = df[df["Tipo de Operação"] == "Receita"].groupby(["Periodo", "Mes_Ano_Label"])["Valor_Num"].sum().reset_index().rename(columns={"Valor_Num": "Receita"}) if "Tipo de Operação" in df.columns else pd.DataFrame(columns=["Periodo", "Mes_Ano_Label", "Receita"])
@@ -227,15 +226,15 @@ with aba_consulta:
         f_col1, f_col2, f_col3 = st.columns(3)
         with f_col1:
             meses_opt = ["Todos"] + list(df["Mes_Ano_Label"].dropna().unique())
-            sel_mes = st.selectbox("Mês/Ano:", meses_opt)
+            sel_mes = st.selectbox("Mês/Ano:", meses_opt, key="consulta_mes")
         with f_col2:
             cats_opt = ["Todas"] + df["Categoria"].dropna().unique().tolist() if "Categoria" in df.columns else ["Todas"]
-            sel_cat = st.selectbox("Categoria / Tipo:", cats_opt)
+            sel_cat = st.selectbox("Categoria / Tipo:", cats_opt, key="consulta_cat")
         with f_col3:
             env_opt = ["Todos"] + df["Corretor / Envolvido"].dropna().unique().tolist() if "Corretor / Envolvido" in df.columns else ["Todos"]
-            sel_env = st.selectbox("Corretor / Envolvido:", env_opt)
+            sel_env = st.selectbox("Corretor / Envolvido:", env_opt, key="consulta_env")
             
-        busca_kw = st.text_input("🔎 Palavra-chave no Histórico (Ex: Facebook, Cartório, Salário):")
+        busca_kw = st.text_input("🔎 Palavra-chave no Histórico (Ex: Facebook, Cartório, Salário):", key="consulta_kw")
         
         df_f = df.copy()
         if sel_mes != "Todos":
@@ -294,29 +293,46 @@ with aba_lancamento:
                 except Exception as e:
                     st.error(f"Erro ao salvar: {e}")
 
-# --- ABA 4: EDITAR E EXCLUIR (BUSCA DINÂMICA) ---
+# --- ABA 4: EDITAR E EXCLUIR (COM FILTROS ESTRUTURADOS) ---
 with aba_editar:
     st.subheader("Alterar ou Excluir Registro Financeiro")
     
-    if not df.empty:
-        busca_editar = st.text_input("🔎 Pesquisar lançamento para gerenciar (digite nome, histórico, valor, categoria ou data):")
+    if df.empty:
+        st.info("Nenhum lançamento cadastrado para editar ou excluir.")
+    else:
+        st.markdown("##### 🔍 Filtros de Pesquisa para Localizar o Lançamento")
+        fe_col1, fe_col2, fe_col3 = st.columns(3)
+        with fe_col1:
+            meses_opt_ed = ["Todos"] + list(df["Mes_Ano_Label"].dropna().unique())
+            sel_mes_ed = st.selectbox("Mês/Ano:", meses_opt_ed, key="edit_mes")
+        with fe_col2:
+            cats_opt_ed = ["Todas"] + df["Categoria"].dropna().unique().tolist() if "Categoria" in df.columns else ["Todas"]
+            sel_cat_ed = st.selectbox("Categoria / Tipo:", cats_opt_ed, key="edit_cat")
+        with fe_col3:
+            env_opt_ed = ["Todos"] + df["Corretor / Envolvido"].dropna().unique().tolist() if "Corretor / Envolvido" in df.columns else ["Todos"]
+            sel_env_ed = st.selectbox("Corretor / Envolvido:", env_opt_ed, key="edit_env")
+            
+        busca_kw_ed = st.text_input("🔎 Palavra-chave no Histórico (Ex: Facebook, Cartório, Salário):", key="edit_kw")
         
         df_edit = df.copy()
-        
-        if busca_editar:
-            termo = busca_editar.lower()
-            cols_busca = [c for c in [col_data, "Tipo de Operação", "Categoria", "Corretor / Envolvido", "Histórico", "Valor (R$)", "Status"] if c in df_edit.columns]
+        if sel_mes_ed != "Todos":
+            df_edit = df_edit[df_edit["Mes_Ano_Label"] == sel_mes_ed]
+        if sel_cat_ed != "Todas" and "Categoria" in df_edit.columns:
+            df_edit = df_edit[df_edit["Categoria"] == sel_cat_ed]
+        if sel_env_ed != "Todos" and "Corretor / Envolvido" in df_edit.columns:
+            df_edit = df_edit[df_edit["Corretor / Envolvido"] == sel_env_ed]
+        if busca_kw_ed and "Histórico" in df_edit.columns:
+            df_edit = df_edit[df_edit["Histórico"].astype(str).str.lower().str.contains(busca_kw_ed.lower())]
             
-            mask = df_edit[cols_busca].apply(lambda row: row.astype(str).str.lower().str.contains(termo).any(), axis=1)
-            df_edit = df_edit[mask]
+        st.write(f"**Registros encontrados para seleção:** {len(df_edit)}")
         
         if df_edit.empty:
-            st.info("Nenhum lançamento encontrado com o termo informado.")
+            st.warning("⚠️ Nenhum lançamento encontrado com os filtros selecionados.")
         else:
             df_edit["ID_Item"] = df_edit.index.astype(str) + " - [" + df_edit[col_data].astype(str) + "] " + df_edit["Histórico"].astype(str) + " (" + df_edit["Valor (R$)"].astype(str) + ")"
             
             lista_opcoes = [""] + df_edit["ID_Item"].tolist()
-            item_sel = st.selectbox("Selecione o registro que deseja alterar ou apagar:", lista_opcoes)
+            item_sel = st.selectbox("Selecione o registro que deseja alterar ou apagar:", lista_opcoes, key="edit_select_item")
             
             if item_sel:
                 idx = int(item_sel.split(" - ")[0])
