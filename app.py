@@ -78,6 +78,42 @@ df = pd.DataFrame(dados_raw) if dados_raw else pd.DataFrame()
 
 col_data = df.columns[0] if not df.empty else "Data"
 
+# TRATAMENTO INTELIGENTE DE VALORES MONETÁRIOS (PONTO x VÍRGULA)
+def tratar_valor_num_inteligente(val):
+    if pd.isna(val):
+        return 0.0
+    val_str = str(val).replace("R$", "").strip()
+    if not val_str:
+        return 0.0
+    
+    # Caso 1: Tem ponto e vírgula no mesmo texto
+    if "." in val_str and "," in val_str:
+        dot_idx = val_str.rfind(".")
+        comma_idx = val_str.rfind(",")
+        if comma_idx > dot_idx:
+            # Padrão Brasileiro: 1.475,90 (ponto milhar, vírgula decimal)
+            val_str = val_str.replace(".", "").replace(",", ".")
+        else:
+            # Padrão Americano: 1,475.90 (vírgula milhar, ponto decimal)
+            val_str = val_str.replace(",", "")
+    elif "," in val_str:
+        # Apenas vírgula: 1475,90
+        val_str = val_str.replace(",", ".")
+    elif "." in val_str:
+        # Apenas ponto: 1475.90 ou 1.475
+        parts = val_str.split(".")
+        if len(parts) == 2 and len(parts[1]) in [1, 2]:
+            # Ponto decimal: 1475.90
+            pass
+        else:
+            # Ponto de milhar: 1.475
+            val_str = val_str.replace(".", "")
+            
+    try:
+        return float(val_str)
+    except Exception:
+        return 0.0
+
 # Mapeamento para parsing de datas
 MONTH_MAP = {
     "JANEIRO": 1, "FEVEREIRO": 2, "MARÇO": 3, "ABRIL": 4,
@@ -118,15 +154,7 @@ if not df.empty:
     df["Mes_Ano_Label"] = df["Periodo"].apply(formatar_rotulo_mes)
     
     if "Valor (R$)" in df.columns:
-        df["Valor_Num"] = (
-            df["Valor (R$)"]
-            .astype(str)
-            .str.replace("R$", "", regex=False)
-            .str.replace(".", "", regex=False)
-            .str.replace(",", ".", regex=False)
-            .str.strip()
-        )
-        df["Valor_Num"] = pd.to_numeric(df["Valor_Num"], errors="coerce").fillna(0.0)
+        df["Valor_Num"] = df["Valor (R$)"].apply(tratar_valor_num_inteligente)
     else:
         df["Valor_Num"] = 0.0
 else:
@@ -361,7 +389,7 @@ with aba_editar:
                     st.session_state.item_para_editar = idx_df
                     st.rerun()
 
-        # FORMULÁRIO DE EDIÇÃO / EXCLUSÃO (Aparece ao clicar em ✏️ Editar)
+        # FORMULÁRIO DE EDIÇÃO / EXCLUSÃO
         if st.session_state.item_para_editar is not None:
             idx = st.session_state.item_para_editar
             if idx in df.index:
@@ -412,12 +440,16 @@ with aba_editar:
                     
                     if btn_atualizar:
                         try:
+                            # Reformatar o valor editado padronizado no salvamento
+                            v_edit_num = tratar_valor_num_inteligente(nov_val)
+                            v_edit_fmt = f"R$ {v_edit_num:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                            
                             sheet.update_cell(linha_real, 1, nov_data)
                             sheet.update_cell(linha_real, 2, nov_tipo)
                             sheet.update_cell(linha_real, 3, nov_cat)
                             sheet.update_cell(linha_real, 4, nov_env)
                             sheet.update_cell(linha_real, 5, nov_hist)
-                            sheet.update_cell(linha_real, 6, nov_val)
+                            sheet.update_cell(linha_real, 6, v_edit_fmt)
                             sheet.update_cell(linha_real, 7, nov_status)
                             sheet.update_cell(linha_real, 8, nov_obs)
                             
@@ -430,7 +462,6 @@ with aba_editar:
                 st.markdown("---")
                 st.markdown("### ❌ Excluir Lançamento")
                 
-                # Dupla confirmação mantida para segurança
                 confirmar = st.checkbox("Confirmo que desejo apagar permanentemente este lançamento.")
                 if confirmar:
                     if st.button("🗑️ Apagar Lançamento Definitivamente", type="primary"):
