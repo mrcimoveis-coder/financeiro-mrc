@@ -176,28 +176,31 @@ raw_saldos_bancarios = sheet_saldos_bancarios.get_all_records()
 if not raw_saldos_bancarios:
     saldos_iniciais = [
         # Banco do Brasil MRC
-        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Investimento BB (Fundo DI)", "Valor (R$)": 1.00, "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Investimento BB (Poupança)", "Valor (R$)": 1.00, "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Investimento BB (CDB)", "Valor (R$)": 1.00, "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Conta Corrente BB", "Valor (R$)": 1.00, "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Outras Aplicações BB", "Valor (R$)": 1.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Investimento BB (Fundo DI)", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Investimento BB (Poupança)", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Investimento BB (CDB)", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Conta Corrente BB", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Outras Aplicações BB", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Lançamentos Futuros", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
         
         # Banco Inter MRC
-        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Investimento Inter (TPF Selic)", "Valor (R$)": 2.00, "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Investimento Inter (Fundo DI)", "Valor (R$)": 2.00, "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Investimento Inter (CDB)", "Valor (R$)": 2.00, "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Conta Corrente Inter", "Valor (R$)": 2.00, "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Investimento Inter (LCI/LCA)", "Valor (R$)": 2.00, "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Outros Fundos Inter", "Valor (R$)": 2.00, "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Saldo Caixa / Diversos Inter", "Valor (R$)": 2.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Investimento Inter (TPF Selic)", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Investimento Inter (Fundo DI)", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Investimento Inter (CDB)", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Conta Corrente Inter", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Investimento Inter (LCI/LCA)", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Outros Fundos Inter", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Saldo Caixa / Diversos Inter", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Lançamentos Futuros", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
 
         # Banco do Brasil Torre Forte
-        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Conta Corrente Torre Forte", "Valor (R$)": 2.00, "Ultima_Atualizacao": ""},
-        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Investimento BB TF (Poupança)", "Valor (R$)": 1.00, "Ultima_Atualizacao": ""},
-        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Investimento BB TF (Fundo DI)", "Valor (R$)": 1.00, "Ultima_Atualizacao": ""},
-        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Investimento BB TF (CDB)", "Valor (R$)": 1.00, "Ultima_Atualizacao": ""},
-        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Aplicações Diversas TF", "Valor (R$)": 1.00, "Ultima_Atualizacao": ""},
-        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Outras Reservas TF", "Valor (R$)": 1.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Conta Corrente Torre Forte", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Investimento BB TF (Poupança)", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Investimento BB TF (Fundo DI)", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Investimento BB TF (CDB)", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Aplicações Diversas TF", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Outras Reservas TF", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Lançamentos Futuros", "Valor (R$)": 0.00, "Ultima_Atualizacao": ""},
     ]
     df_saldos_banco = pd.DataFrame(saldos_iniciais)
 else:
@@ -554,7 +557,7 @@ with aba_editar:
 # -----------------------------------------------------------------------------
 with aba_saldos:
     st.subheader("🏦 Controle de Saldos Bancários & Investimentos")
-    st.write("Atualize e acompanhe os saldos das contas do Banco do Brasil, Banco Inter e Torre Forte. Os totais são consolidados em tempo real.")
+    st.caption("💡 **Para lançamentos futuros:** digite valores positivos (`+`) para créditos previstos ou negativos (`-`) para débitos a abater.")
 
     if data_ultima_att:
         st.info(f"🕒 **Última atualização realizada em:** {data_ultima_att}")
@@ -571,7 +574,7 @@ with aba_saldos:
         column_config={
             "Grupo": st.column_config.SelectboxColumn("Grupo / Conta", options=["Banco do Brasil MRC", "Banco Inter MRC", "BB Torre Forte"], required=True),
             "Descrição / Tipo": st.column_config.TextColumn("Descrição / Tipo de Aplicação", required=True),
-            "Valor (R$)": st.column_config.NumberColumn("Valor Atual (R$)", format="R$ %.2f", min_value=0.0)
+            "Valor (R$)": st.column_config.NumberColumn("Valor Atual (R$)", format="R$ %.2f", help="Use sinal negativo (-) para débitos futuros.")
         }
     )
 
