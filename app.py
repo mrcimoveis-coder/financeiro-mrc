@@ -293,7 +293,7 @@ with aba_lancamento:
                 except Exception as e:
                     st.error(f"Erro ao salvar: {e}")
 
-# --- ABA 4: EDITAR E EXCLUIR (CLIQUE DIRETO NO REGISTRO) ---
+# --- ABA 4: EDITAR E EXCLUIR ---
 with aba_editar:
     st.subheader("Alterar ou Excluir Registro Financeiro")
     
@@ -429,13 +429,18 @@ with aba_editar:
                 
                 st.markdown("---")
                 st.markdown("### ❌ Excluir Lançamento")
-                confirmar = st.checkbox("Confirmo que desejo apagar permanentemente este lançamento.")
-                if confirmar:
-                    if st.button("🗑️ Apagar Lançamento Definitivamente"):
+                
+                if st.button("🗑️ Confirmar Exclusão Definitiva", type="primary"):
+                    try:
                         try:
+                            sheet.delete_rows(linha_real)
+                        except AttributeError:
                             sheet.delete_row(linha_real)
-                            st.success("✅ Lançamento excluído com sucesso!")
-                            st.session_state.item_para_editar = None
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Erro ao excluir lançamento: {e}")
+                            
+                        st.success("✅ Lançamento excluído com sucesso!")
+                        st.session_state.item_para_editar = None
+                        st.cache_data.clear()
+                        st.cache_resource.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Erro ao excluir lançamento: {e}")
