@@ -89,9 +89,12 @@ aba_dash, aba_consulta, aba_lancamento, aba_editar, aba_saldos = st.tabs([
 ])
 
 def tratar_valor_num_inteligente(val):
-    if pd.isna(val):
+    if pd.isna(val) or val is None:
         return 0.0
-    val_str = str(val).replace("R$", "").strip()
+    if isinstance(val, (int, float)):
+        return float(val)
+    
+    val_str = str(val).replace("R$", "").replace(" ", "").strip()
     if not val_str:
         return 0.0
     
@@ -104,12 +107,6 @@ def tratar_valor_num_inteligente(val):
             val_str = val_str.replace(",", "")
     elif "," in val_str:
         val_str = val_str.replace(",", ".")
-    elif "." in val_str:
-        parts = val_str.split(".")
-        if len(parts) == 2 and len(parts[1]) in [1, 2]:
-            pass
-        else:
-            val_str = val_str.replace(".", "")
             
     try:
         return float(val_str)
