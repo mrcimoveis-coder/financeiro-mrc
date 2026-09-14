@@ -20,23 +20,30 @@ SCOPES = [
 ]
 
 @st.cache_resource
-def conectar_google_sheets():
+def conectar_google_sheets(nome_aba=None):
     credenciais_dict = dict(st.secrets["gcp_service_account"])
     if "private_key" in credenciais_dict:
         credenciais_dict["private_key"] = credenciais_dict["private_key"].replace("\\n", "\n")
     
     credentials = Credentials.from_service_account_info(credenciais_dict, scopes=SCOPES)
     client = gspread.authorize(credentials)
-    return client.open_by_key("1WaIP5FJpudjKvOXw0pQe7YfJlTPrISAmaBDZswuCsxM").sheet1
+    spreadsheet = client.open_by_key("1WaIP5FJpudjKvOXw0pQe7YfJlTPrISAmaBDZswuCsxM")
+    
+    if nome_aba:
+        try:
+            return spreadsheet.worksheet(nome_aba)
+        except Exception:
+            return spreadsheet.add_worksheet(title=nome_aba, rows="100", cols="20")
+    return spreadsheet.sheet1
 
 # 3. Autenticação de Acesso
 USUARIOS = {
     "admin": "431360#In",
     "marcelo": "431360Fi",
     "marcio": "Mpve2804",
-    "pedro.martinez": "431360",
-    "manoel.iglesias": "431360",
-    "marcos.junior": "431360"
+    "pedro.martinez": "431360xxxx",
+    "manoel.iglesias": "431360xxxx",
+    "marcos.junior": "431360xxxxxx"
 }
 
 if "autenticado_fin" not in st.session_state:
@@ -63,20 +70,15 @@ except Exception as e:
     st.stop()
 
 st.title("💰 Painel Financeiro — MRC Imóveis")
-st.write("Controle de receitas, despesas, comissões e análise gráfica.")
+st.write("Controle de receitas, despesas, comissões, projeções e DRE anual.")
 
-aba_dash, aba_consulta, aba_lancamento, aba_editar = st.tabs([
+aba_dash, aba_consulta, aba_lancamento, aba_editar, aba_dre = st.tabs([
     "📊 Dashboard & Gráficos", 
     "🔍 Pesquisa & Histórico", 
     "➕ Novo Lançamento", 
-    "✏️ Editar / Excluir"
+    "✏️ Editar / Excluir",
+    "📅 Projeção & DRE Anual"
 ])
-
-# Carregar Dados
-dados_raw = sheet.get_all_records()
-df = pd.DataFrame(dados_raw) if dados_raw else pd.DataFrame()
-
-col_data = df.columns[0] if not df.empty else "Data"
 
 # TRATAMENTO INTELIGENTE DE VALORES MONETÁRIOS (PONTO x VÍRGULA)
 def tratar_valor_num_inteligente(val):
@@ -86,27 +88,20 @@ def tratar_valor_num_inteligente(val):
     if not val_str:
         return 0.0
     
-    # Caso 1: Tem ponto e vírgula no mesmo texto
     if "." in val_str and "," in val_str:
         dot_idx = val_str.rfind(".")
         comma_idx = val_str.rfind(",")
         if comma_idx > dot_idx:
-            # Padrão Brasileiro: 1.475,90 (ponto milhar, vírgula decimal)
             val_str = val_str.replace(".", "").replace(",", ".")
         else:
-            # Padrão Americano: 1,475.90 (vírgula milhar, ponto decimal)
             val_str = val_str.replace(",", "")
     elif "," in val_str:
-        # Apenas vírgula: 1475,90
         val_str = val_str.replace(",", ".")
     elif "." in val_str:
-        # Apenas ponto: 1475.90 ou 1.475
         parts = val_str.split(".")
         if len(parts) == 2 and len(parts[1]) in [1, 2]:
-            # Ponto decimal: 1475.90
             pass
         else:
-            # Ponto de milhar: 1.475
             val_str = val_str.replace(".", "")
             
     try:
@@ -114,7 +109,12 @@ def tratar_valor_num_inteligente(val):
     except Exception:
         return 0.0
 
-# Mapeamento para parsing de datas
+# Carregar Dados
+dados_raw = sheet.get_all_records()
+df = pd.DataFrame(dados_raw) if dados_raw else pd.DataFrame()
+
+col_data = df.columns[0] if not df.empty else "Data"
+
 MONTH_MAP = {
     "JANEIRO": 1, "FEVEREIRO": 2, "MARÇO": 3, "ABRIL": 4,
     "MAIO": 5, "JUNHO": 6, "JULHO": 7, "AGOSTO": 8,
@@ -363,7 +363,6 @@ with aba_editar:
         else:
             st.markdown("##### 📋 Clique no botão ✏️ Editar do lançamento que deseja alterar ou apagar:")
             
-            # Cabeçalho da Lista Interativa
             h_c1, h_c2, h_c3, h_c4, h_c5, h_c6, h_c7 = st.columns([1.1, 0.9, 1.2, 1.2, 2.2, 1.2, 0.9])
             h_c1.markdown("**Data**")
             h_c2.markdown("**Tipo**")
@@ -374,7 +373,6 @@ with aba_editar:
             h_c7.markdown("**Ação**")
             st.markdown("---")
 
-            # Linhas com botão de edição direto por item
             for idx_df, row in df_edit.iterrows():
                 r_c1, r_c2, r_c3, r_c4, r_c5, r_c6, r_c7 = st.columns([1.1, 0.9, 1.2, 1.2, 2.2, 1.2, 0.9])
                 
@@ -389,7 +387,6 @@ with aba_editar:
                     st.session_state.item_para_editar = idx_df
                     st.rerun()
 
-        # FORMULÁRIO DE EDIÇÃO / EXCLUSÃO
         if st.session_state.item_para_editar is not None:
             idx = st.session_state.item_para_editar
             if idx in df.index:
@@ -407,7 +404,6 @@ with aba_editar:
                     col_ed1, col_ed2 = st.columns(2)
                     with col_ed1:
                         nov_data = st.text_input("Data / Mês *", value=str(dados_item.get(col_data, "")))
-                        
                         tp_atual = str(dados_item.get("Tipo de Operação", "Despesa")).strip()
                         nov_tipo = st.selectbox("Tipo de Operação *", ["Despesa", "Receita"], index=0 if tp_atual.lower() == "despesa" else 1)
                         
@@ -423,24 +419,20 @@ with aba_editar:
                         cat_atual = str(dados_item.get("Categoria", "")).strip()
                         idx_cat = cats_lista.index(cat_atual) if cat_atual in cats_lista else len(cats_lista) - 1
                         nov_cat = st.selectbox("Categoria / Tipo *", cats_lista, index=idx_cat)
-                        
                         nov_env = st.text_input("Corretor / Envolvido", value=str(dados_item.get("Corretor / Envolvido", "")))
                     
                     with col_ed2:
                         nov_hist = st.text_input("Histórico / Descrição *", value=str(dados_item.get("Histórico", "")))
                         nov_val = st.text_input("Valor (R$) *", value=str(dados_item.get("Valor (R$)", "")))
-                        
                         st_atual = str(dados_item.get("Status", "")).strip().lower()
                         idx_st = 0 if st_atual == "confirmado" else 1
                         nov_status = st.selectbox("Status", ["confirmado", "pendente"], index=idx_st)
-                        
                         nov_obs = st.text_area("Observações", value=str(dados_item.get("Observação", "")))
                         
                     btn_atualizar = st.form_submit_button("🔄 Salvar Alterações", type="primary")
                     
                     if btn_atualizar:
                         try:
-                            # Reformatar o valor editado padronizado no salvamento
                             v_edit_num = tratar_valor_num_inteligente(nov_val)
                             v_edit_fmt = f"R$ {v_edit_num:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
                             
@@ -461,7 +453,6 @@ with aba_editar:
                 
                 st.markdown("---")
                 st.markdown("### ❌ Excluir Lançamento")
-                
                 confirmar = st.checkbox("Confirmo que desejo apagar permanentemente este lançamento.")
                 if confirmar:
                     if st.button("🗑️ Apagar Lançamento Definitivamente", type="primary"):
@@ -478,3 +469,104 @@ with aba_editar:
                             st.rerun()
                         except Exception as e:
                             st.error(f"❌ Erro ao excluir lançamento: {e}")
+
+# --- ABA 5: PROJEÇÃO & DRE ANUAL (NOVA) ---
+with aba_dre:
+    st.subheader("📅 Planejamento, Saldos e DRE Anual (2026)")
+    st.write("Atualize manualmente os saldos das contas e cofres sem alterar os lançamentos operacionais.")
+
+    # Conexão com aba dedicada no Google Sheets para armazenar saldos informados
+    sheet_saldos = conectar_google_sheets(nome_aba="Saldos_Manuais")
+    saldos_raw = sheet_saldos.get_all_records()
+    df_saldos = pd.DataFrame(saldos_raw) if saldos_raw else pd.DataFrame(columns=["Conta", "Valor"])
+
+    def get_saldo_manual(nome_conta, valor_padrao=0.0):
+        if not df_saldos.empty and "Conta" in df_saldos.columns:
+            f = df_saldos[df_saldos["Conta"] == nome_conta]
+            if not f.empty:
+                return tratar_valor_num_inteligente(f.iloc[0]["Valor"])
+        return valor_padrao
+
+    st.markdown("---")
+    st.markdown("### 🏦 1. Saldos das Contas & Cofres (Atualização Manual)")
+    
+    with st.form("form_saldos_manuais"):
+        col_s1, col_s2, col_s3 = st.columns(3)
+        with col_s1:
+            val_cofre = st.number_input("Dinheiro em Cofre (R$)", value=get_saldo_manual("Cofre", 2700.0), format="%.2f")
+            val_fundo_bb = st.number_input("Fundo Investimento BB (R$)", value=get_saldo_manual("Fundo_BB", 38306.36), format="%.2f")
+            val_fundo_inter = st.number_input("Fundo Investimento Inter (R$)", value=get_saldo_manual("Fundo_Inter", 228258.21), format="%.2f")
+        
+        with col_s2:
+            val_tpf_selic = st.number_input("Inter TPF - Título Público Selic (R$)", value=get_saldo_manual("TPF_Selic", 1053105.78), format="%.2f")
+            val_cc_bb = st.number_input("Conta Corrente BB (R$)", value=get_saldo_manual("CC_BB", 120493.92), format="%.2f")
+            val_cc_inter = st.number_input("Conta Corrente Inter (R$)", value=get_saldo_manual("CC_Inter", -42492.08), format="%.2f")
+            
+        with col_s3:
+            val_cc_tf = st.number_input("Conta TF + Aplicação (R$)", value=get_saldo_manual("CC_TF", 20816.96), format="%.2f")
+            val_ret_socios = st.number_input("Retirada Sócios Mês Atual (R$)", value=get_saldo_manual("Retirada_Socios", 28000.0), format="%.2f")
+            val_ret_lucros = st.number_input("Retirada Lucros Adicionais (R$)", value=get_saldo_manual("Retirada_Lucros", 30000.0), format="%.2f")
+
+        btn_salvar_saldos = st.form_submit_button("💾 Atualizar Saldos Manuais", type="primary")
+
+        if btn_salvar_saldos:
+            try:
+                novos_saldos = [
+                    ["Cofre", val_cofre],
+                    ["Fundo_BB", val_fundo_bb],
+                    ["Fundo_Inter", val_fundo_inter],
+                    ["TPF_Selic", val_tpf_selic],
+                    ["CC_BB", val_cc_bb],
+                    ["CC_Inter", val_cc_inter],
+                    ["CC_TF", val_cc_tf],
+                    ["Retirada_Socios", val_ret_socios],
+                    ["Retirada_Lucros", val_ret_lucros],
+                ]
+                sheet_saldos.clear()
+                sheet_saldos.append_row(["Conta", "Valor"])
+                for row_s in novos_saldos:
+                    sheet_saldos.append_row(row_s)
+                
+                st.success("✅ Saldos manuais salvos com sucesso!")
+                st.cache_data.clear()
+                st.cache_resource.clear()
+                st.rerun()
+            except Exception as e_s:
+                st.error(f"Erro ao salvar saldos: {e_s}")
+
+    st.markdown("---")
+    st.markdown("### 📊 2. Demonstração do Resultado (DRE Consolidada)")
+
+    # Cálculos Consolidados da DRE
+    tot_investimentos = val_fundo_bb + val_fundo_inter + val_tpf_selic
+    
+    rec_confirmada = df[(df["Tipo de Operação"] == "Receita") & (df["Status"].astype(str).str.lower() == "confirmado")]["Valor_Num"].sum() if not df.empty and "Tipo de Operação" in df.columns else 0.0
+    desp_confirmada = df[(df["Tipo de Operação"] == "Despesa") & (df["Status"].astype(str).str.lower() == "confirmado")]["Valor_Num"].sum() if not df.empty and "Tipo de Operação" in df.columns else 0.0
+    
+    resultado_efetivo = rec_confirmada - desp_confirmada - val_ret_socios - val_ret_lucros
+    fundos_e_resultados = tot_investimentos + resultado_efetivo
+    total_geral = fundos_e_resultados + val_cofre
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Dinheiro em Cofre", f"R$ {val_cofre:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    m2.metric("Total Investimentos / Selic", f"R$ {tot_investimentos:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    m3.metric("Fundos & Resultados", f"R$ {fundos_e_resultados:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    m4.metric("TOTAL GERAL DA EMPRESA", f"R$ {total_geral:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+
+    st.markdown("---")
+    st.markdown("##### 📋 Resumo Consolidado do Mês")
+    
+    dre_table_data = [
+        {"Item / Conta": "TOTAL GERAL", "Valor (R$)": f"R$ {total_geral:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
+        {"Item / Conta": "  ├── Dinheiro em Cofre", "Valor (R$)": f"R$ {val_cofre:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
+        {"Item / Conta": "  └── FUNDOS E RESULTADOS", "Valor (R$)": f"R$ {fundos_e_resultados:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
+        {"Item / Conta": "      ├── Fundo BB", "Valor (R$)": f"R$ {val_fundo_bb:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
+        {"Item / Conta": "      ├── Fundo Inter", "Valor (R$)": f"R$ {val_fundo_inter:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
+        {"Item / Conta": "      ├── TPF Selic", "Valor (R$)": f"R$ {val_tpf_selic:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
+        {"Item / Conta": "      └── RESULTADO EFETIVO DA OPERAÇÃO", "Valor (R$)": f"R$ {resultado_efetivo:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
+        {"Item / Conta": "          ├── Receitas Confirmadas", "Valor (R$)": f"R$ {rec_confirmada:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
+        {"Item / Conta": "          ├── Despesas Confirmadas", "Valor (R$)": f"- R$ {desp_confirmada:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
+        {"Item / Conta": "          ├── Retirada de Sócios", "Valor (R$)": f"- R$ {val_ret_socios:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
+        {"Item / Conta": "          └── Retirada Lucros Adicionais", "Valor (R$)": f"- R$ {val_ret_lucros:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
+    ]
+    st.dataframe(pd.DataFrame(dre_table_data), use_container_width=True, hide_index=True)
