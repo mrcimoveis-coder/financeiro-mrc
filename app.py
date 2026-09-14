@@ -293,7 +293,7 @@ with aba_lancamento:
                 except Exception as e:
                     st.error(f"Erro ao salvar: {e}")
 
-# --- ABA 4: EDITAR E EXCLUIR (COM FILTROS ESTRUTURADOS) ---
+# --- ABA 4: EDITAR E EXCLUIR (TABELA COMPLETA + SELEÇÃO) ---
 with aba_editar:
     st.subheader("Alterar ou Excluir Registro Financeiro")
     
@@ -324,23 +324,32 @@ with aba_editar:
         if busca_kw_ed and "Histórico" in df_edit.columns:
             df_edit = df_edit[df_edit["Histórico"].astype(str).str.lower().str.contains(busca_kw_ed.lower())]
             
-        st.write(f"**Registros encontrados para seleção:** {len(df_edit)}")
+        st.write(f"**Registros encontrados:** {len(df_edit)} | **Subtotal:** R$ {df_edit['Valor_Num'].sum():,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
         
         if df_edit.empty:
             st.warning("⚠️ Nenhum lançamento encontrado com os filtros selecionados.")
         else:
+            # 1. EXIBIÇÃO DA TABELA COMPLETA DOS REGISTROS ENCONTRADOS
+            cols_desejadas = [col_data, "Tipo de Operação", "Categoria", "Corretor / Envolvido", "Histórico", "Valor (R$)", "Status", "Observação"]
+            cols_existentes = [c for c in cols_desejadas if c in df_edit.columns]
+            st.dataframe(df_edit[cols_existentes], use_container_width=True, hide_index=True)
+            
+            st.markdown("---")
+            st.markdown("##### ✏️ Escolha o lançamento que deseja editar ou excluir:")
+            
+            # 2. SELEÇÃO DIRETA DO ITEM DA LISTA FILTRADA
             df_edit["ID_Item"] = df_edit.index.astype(str) + " - [" + df_edit[col_data].astype(str) + "] " + df_edit["Histórico"].astype(str) + " (" + df_edit["Valor (R$)"].astype(str) + ")"
             
-            lista_opcoes = [""] + df_edit["ID_Item"].tolist()
-            item_sel = st.selectbox("Selecione o registro que deseja alterar ou apagar:", lista_opcoes, key="edit_select_item")
+            lista_opcoes = ["-- Selecione um registro da lista acima --"] + df_edit["ID_Item"].tolist()
+            item_sel = st.selectbox("Registro selecionado:", lista_opcoes, key="edit_select_item")
             
-            if item_sel:
+            if item_sel and not item_sel.startswith("--"):
                 idx = int(item_sel.split(" - ")[0])
                 linha_real = idx + 2
                 dados_item = df.iloc[idx]
                 
                 st.markdown("---")
-                st.markdown(f"### ✏️ Editar Lançamento #{idx + 1}")
+                st.markdown(f"### ✏️ Formulário de Edição — Lançamento #{idx + 1}")
                 
                 with st.form("form_editar_financeiro"):
                     col_ed1, col_ed2 = st.columns(2)
