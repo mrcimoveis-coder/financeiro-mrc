@@ -78,14 +78,14 @@ except Exception as e:
     st.stop()
 
 st.title("💰 Painel Financeiro — MRC Imóveis")
-st.write("Controle de receitas, despesas, comissões, projeções e DRE anual.")
+st.write("Controle de receitas, despesas, comissões, projeções e saldos bancários.")
 
-aba_dash, aba_consulta, aba_lancamento, aba_editar, aba_dre = st.tabs([
+aba_dash, aba_consulta, aba_lancamento, aba_editar, aba_saldos = st.tabs([
     "📊 Dashboard & Gráficos", 
     "🔍 Pesquisa & Histórico", 
     "➕ Novo Lançamento", 
     "✏️ Editar / Excluir",
-    "📅 Planilha Matricial & DRE Anual"
+    "🏦 Saldos Bancários & Investimentos"
 ])
 
 def tratar_valor_num_inteligente(val):
@@ -172,14 +172,81 @@ else:
     df["Periodo"] = None
     df["Mes_Ano_Label"] = None
 
+# Carregar Saldos Bancários de Aba dedicada no Sheets
+sheet_saldos_bancarios = conectar_google_sheets("Saldos_Bancarios")
+raw_saldos_bancarios = sheet_saldos_bancarios.get_all_records()
+
+if not raw_saldos_bancarios:
+    saldos_iniciais = [
+        # Banco do Brasil MRC
+        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Investimento BB (Fundo DI)", "Valor (R$)": 1.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Investimento BB (Poupança)", "Valor (R$)": 1.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Investimento BB (CDB)", "Valor (R$)": 1.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Conta Corrente BB", "Valor (R$)": 1.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Outras Aplicações BB", "Valor (R$)": 1.00, "Ultima_Atualizacao": ""},
+        
+        # Banco Inter MRC
+        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Investimento Inter (TPF Selic)", "Valor (R$)": 2.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Investimento Inter (Fundo DI)", "Valor (R$)": 2.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Investimento Inter (CDB)", "Valor (R$)": 2.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Conta Corrente Inter", "Valor (R$)": 2.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Investimento Inter (LCI/LCA)", "Valor (R$)": 2.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Outros Fundos Inter", "Valor (R$)": 2.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Saldo Caixa / Diversos Inter", "Valor (R$)": 2.00, "Ultima_Atualizacao": ""},
+
+        # Banco do Brasil Torre Forte
+        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Conta Corrente Torre Forte", "Valor (R$)": 2.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Investimento BB TF (Poupança)", "Valor (R$)": 1.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Investimento BB TF (Fundo DI)", "Valor (R$)": 1.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Investimento BB TF (CDB)", "Valor (R$)": 1.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Aplicações Diversas TF", "Valor (R$)": 1.00, "Ultima_Atualizacao": ""},
+        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Outras Reservas TF", "Valor (R$)": 1.00, "Ultima_Atualizacao": ""},
+    ]
+    df_saldos_banco = pd.DataFrame(saldos_iniciais)
+else:
+    df_saldos_banco = pd.DataFrame(raw_saldos_bancarios)
+
+if "Valor (R$)" in df_saldos_banco.columns:
+    df_saldos_banco["Valor_Num"] = df_saldos_banco["Valor (R$)"].apply(tratar_valor_num_inteligente)
+else:
+    df_saldos_banco["Valor_Num"] = 0.0
+
+tot_bb_mrc = df_saldos_banco[df_saldos_banco["Grupo"] == "Banco do Brasil MRC"]["Valor_Num"].sum() if not df_saldos_banco.empty else 0.0
+tot_inter_mrc = df_saldos_banco[df_saldos_banco["Grupo"] == "Banco Inter MRC"]["Valor_Num"].sum() if not df_saldos_banco.empty else 0.0
+tot_bancos_mrc = tot_bb_mrc + tot_inter_mrc
+
+tot_tf = df_saldos_banco[df_saldos_banco["Grupo"] == "BB Torre Forte"]["Valor_Num"].sum() if not df_saldos_banco.empty else 0.0
+tot_geral_bancos = tot_bancos_mrc + tot_tf
+
+data_ultima_att = ""
+if not df_saldos_banco.empty and "Ultima_Atualizacao" in df_saldos_banco.columns:
+    dt_vals = df_saldos_banco["Ultima_Atualizacao"].dropna().astype(str).unique()
+    dt_vals = [v for v in dt_vals if v.strip()]
+    if dt_vals:
+        data_ultima_att = dt_vals[0]
+
 # -----------------------------------------------------------------------------
 # ABA 1: DASHBOARD & GRÁFICOS
 # -----------------------------------------------------------------------------
 with aba_dash:
-    if df.empty:
-        st.info("Nenhum registro cadastrado no financeiro para gerar indicadores.")
+    st.subheader("🏦 Resumo de Saldos Bancários & Investimentos")
+    if data_ultima_att:
+        st.caption(f"🕒 **Última atualização dos saldos bancários:** {data_ultima_att}")
     else:
-        st.subheader("Indicadores Gerais")
+        st.caption("🕒 **Saldos aguardando primeira atualização.**")
+
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("Total Banco do Brasil MRC", f"R$ {tot_bb_mrc:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    s2.metric("Total Banco Inter MRC", f"R$ {tot_inter_mrc:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    s3.metric("Total Bancos Torre Forte", f"R$ {tot_tf:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    s4.metric("SALDO TOTAL CONSOLIDADO", f"R$ {tot_geral_bancos:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+
+    st.markdown("---")
+
+    if df.empty:
+        st.info("Nenhum registro cadastrado no financeiro para gerar indicadores operacionais.")
+    else:
+        st.subheader("📊 Indicadores Operacionais")
         
         tot_receita = df[df["Tipo de Operação"] == "Receita"]["Valor_Num"].sum() if "Tipo de Operação" in df.columns else 0.0
         tot_despesa = df[df["Tipo de Operação"] == "Despesa"]["Valor_Num"].sum() if "Tipo de Operação" in df.columns else df["Valor_Num"].sum()
@@ -486,147 +553,54 @@ with aba_editar:
                             st.error(f"❌ Erro ao excluir lançamento: {e}")
 
 # -----------------------------------------------------------------------------
-# ABA 5: PLANILHA MATRICIAL INTERATIVA (O EXCEL DENTRO DO APP)
+# ABA 5: SALDOS BANCÁRIOS & INVESTIMENTOS (SIMPLIFICADA)
 # -----------------------------------------------------------------------------
-with aba_dre:
-    sheet_matriz = conectar_google_sheets("Matriz_2026")
-    dados_raw_matriz = sheet_matriz.get_all_records()
+with aba_saldos:
+    st.subheader("🏦 Controle de Saldos Bancários & Investimentos")
+    st.write("Atualize e acompanhe os saldos das contas do Banco do Brasil, Banco Inter e Torre Forte. Os totais são consolidados em tempo real.")
 
-    MESES = ["JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO", "JULHO", "AGOSTO", "SETEMBRO", "OUTUBRO", "NOVEMBRO", "DEZEMBRO"]
-
-    # Se a aba no Google Sheets estiver vazia, carrega a estrutura padrão da MRC
-    if not dados_raw_matriz:
-        itens_iniciais = [
-            {"Tipo": "CAIXA", "Item / Categoria": "Valor em Dinheiro (Cofre)", "JANEIRO": 0, "FEVEREIRO": 0, "MARÇO": 0, "ABRIL": 0, "MAIO": 0, "JUNHO": 0, "JULHO": 0, "AGOSTO": 0, "SETEMBRO": 2700, "OUTUBRO": 0, "NOVEMBRO": 0, "DEZEMBRO": 0},
-            {"Tipo": "BANCO", "Item / Categoria": "Saldo Fundo Investimento BB", "JANEIRO": 0, "FEVEREIRO": 0, "MARÇO": 0, "ABRIL": 0, "MAIO": 0, "JUNHO": 0, "JULHO": 0, "AGOSTO": 0, "SETEMBRO": 38306.36, "OUTUBRO": 0, "NOVEMBRO": 0, "DEZEMBRO": 0},
-            {"Tipo": "BANCO", "Item / Categoria": "Saldo Fundo Investimento Inter", "JANEIRO": 0, "FEVEREIRO": 0, "MARÇO": 0, "ABRIL": 0, "MAIO": 0, "JUNHO": 0, "JULHO": 0, "AGOSTO": 0, "SETEMBRO": 228258.21, "OUTUBRO": 0, "NOVEMBRO": 0, "DEZEMBRO": 0},
-            {"Tipo": "BANCO", "Item / Categoria": "Saldo Inter TPF - Titulo Publico Selic", "JANEIRO": 0, "FEVEREIRO": 0, "MARÇO": 0, "ABRIL": 0, "MAIO": 0, "JUNHO": 0, "JULHO": 0, "AGOSTO": 0, "SETEMBRO": 1053105.78, "OUTUBRO": 0, "NOVEMBRO": 0, "DEZEMBRO": 0},
-            
-            {"Tipo": "RECEITA", "Item / Categoria": "Receita Mensal (Aluguel)", "JANEIRO": 0, "FEVEREIRO": 0, "MARÇO": 0, "ABRIL": 0, "MAIO": 0, "JUNHO": 0, "JULHO": 0, "AGOSTO": 0, "SETEMBRO": 3000, "OUTUBRO": 96000, "NOVEMBRO": 80000, "DEZEMBRO": 87000},
-            {"Tipo": "RECEITA", "Item / Categoria": "Seg Inc + DVDB (Média 2026)", "JANEIRO": 0, "FEVEREIRO": 0, "MARÇO": 0, "ABRIL": 0, "MAIO": 0, "JUNHO": 0, "JULHO": 0, "AGOSTO": 0, "SETEMBRO": 0, "OUTUBRO": 7000, "NOVEMBRO": 7000, "DEZEMBRO": 7000},
-            {"Tipo": "RECEITA", "Item / Categoria": "Parcelamento Jamilton ref. Venc 12/25", "JANEIRO": 0, "FEVEREIRO": 0, "MARÇO": 0, "ABRIL": 0, "MAIO": 0, "JUNHO": 0, "JULHO": 0, "AGOSTO": 0, "SETEMBRO": 0, "OUTUBRO": 1379.48, "NOVEMBRO": 1379.48, "DEZEMBRO": 2758.96},
-            {"Tipo": "RECEITA", "Item / Categoria": "ALUGUEL SALA CLSW 304", "JANEIRO": 0, "FEVEREIRO": 0, "MARÇO": 0, "ABRIL": 0, "MAIO": 0, "JUNHO": 0, "JULHO": 0, "AGOSTO": 0, "SETEMBRO": 0, "OUTUBRO": 2200, "NOVEMBRO": 2200, "DEZEMBRO": 2200},
-            
-            {"Tipo": "DESPESA", "Item / Categoria": "Salário Marcos Junior", "JANEIRO": 0, "FEVEREIRO": 0, "MARÇO": 0, "ABRIL": 0, "MAIO": 0, "JUNHO": 0, "JULHO": 0, "AGOSTO": 0, "SETEMBRO": 0, "OUTUBRO": 8000, "NOVEMBRO": 8000, "DEZEMBRO": 15000},
-            {"Tipo": "DESPESA", "Item / Categoria": "Salario Pedro", "JANEIRO": 0, "FEVEREIRO": 0, "MARÇO": 0, "ABRIL": 0, "MAIO": 0, "JUNHO": 0, "JULHO": 0, "AGOSTO": 0, "SETEMBRO": 0, "OUTUBRO": 8500, "NOVEMBRO": 8500, "DEZEMBRO": 25500},
-            {"Tipo": "DESPESA", "Item / Categoria": "Salário Mensal Manoel", "JANEIRO": 0, "FEVEREIRO": 0, "MARÇO": 0, "ABRIL": 0, "MAIO": 0, "JUNHO": 0, "JULHO": 0, "AGOSTO": 0, "SETEMBRO": 0, "OUTUBRO": 1600, "NOVEMBRO": 1600, "DEZEMBRO": 1600},
-            {"Tipo": "DESPESA", "Item / Categoria": "Salário Mensal Marcos Veloso", "JANEIRO": 0, "FEVEREIRO": 0, "MARÇO": 0, "ABRIL": 0, "MAIO": 0, "JUNHO": 0, "JULHO": 0, "AGOSTO": 0, "SETEMBRO": 0, "OUTUBRO": 1600, "NOVEMBRO": 1600, "DEZEMBRO": 1600},
-            {"Tipo": "DESPESA", "Item / Categoria": "Superlogica - Software", "JANEIRO": 0, "FEVEREIRO": 0, "MARÇO": 0, "ABRIL": 0, "MAIO": 0, "JUNHO": 0, "JULHO": 0, "AGOSTO": 0, "SETEMBRO": 0, "OUTUBRO": 505, "NOVEMBRO": 505, "DEZEMBRO": 505},
-            {"Tipo": "DESPESA", "Item / Categoria": "Impostos SIMPLES NACIONAL", "JANEIRO": 0, "FEVEREIRO": 0, "MARÇO": 0, "ABRIL": 0, "MAIO": 0, "JUNHO": 0, "JULHO": 0, "AGOSTO": 0, "SETEMBRO": 14113.11, "OUTUBRO": 12180, "NOVEMBRO": 13720, "DEZEMBRO": 11900},
-            {"Tipo": "DESPESA", "Item / Categoria": "DF Imóveis", "JANEIRO": 0, "FEVEREIRO": 0, "MARÇO": 0, "ABRIL": 0, "MAIO": 0, "JUNHO": 0, "JULHO": 0, "AGOSTO": 0, "SETEMBRO": 1475.9, "OUTUBRO": 1475.9, "NOVEMBRO": 1475.9, "DEZEMBRO": 1800},
-            {"Tipo": "DESPESA", "Item / Categoria": "Comissão Vendedores sobre aluguel", "JANEIRO": 0, "FEVEREIRO": 0, "MARÇO": 0, "ABRIL": 0, "MAIO": 0, "JUNHO": 0, "JULHO": 0, "AGOSTO": 0, "SETEMBRO": 0, "OUTUBRO": 4500, "NOVEMBRO": 4500, "DEZEMBRO": 4500},
-            
-            {"Tipo": "RETIRADA", "Item / Categoria": "Retirada Sócios", "JANEIRO": 0, "FEVEREIRO": 0, "MARÇO": 0, "ABRIL": 0, "MAIO": 0, "JUNHO": 0, "JULHO": 0, "AGOSTO": 0, "SETEMBRO": 0, "OUTUBRO": 28000, "NOVEMBRO": 28000, "DEZEMBRO": 28000},
-            {"Tipo": "RETIRADA", "Item / Categoria": "Retirada Lucros Adicionais", "JANEIRO": 0, "FEVEREIRO": 0, "MARÇO": 0, "ABRIL": 0, "MAIO": 0, "JUNHO": 0, "JULHO": 0, "AGOSTO": 0, "SETEMBRO": 0, "OUTUBRO": 30000, "NOVEMBRO": 12500, "DEZEMBRO": 21500},
-        ]
-        df_matriz = pd.DataFrame(itens_iniciais)
+    if data_ultima_att:
+        st.info(f"🕒 **Última atualização realizada em:** {data_ultima_att}")
     else:
-        df_matriz = pd.DataFrame(dados_raw_matriz)
+        st.warning("⚠️ **Atenção:** Os saldos ainda não foram salvos no sistema. Atualize os valores abaixo e clique em Salvar.")
 
-    st.subheader("📊 Planilha Financeira Anual — MRC Imóveis (2026)")
-    st.write("Altere qualquer valor diretamente na tabela abaixo (estilo Excel). Os totais e a Sobra Livre do Mês são recalculados automaticamente.")
+    cols_ed = ["Grupo", "Descrição / Tipo", "Valor (R$)"]
+    df_saldos_view = df_saldos_banco[cols_ed].copy() if not df_saldos_banco.empty and all(c in df_saldos_banco.columns for c in cols_ed) else pd.DataFrame(columns=cols_ed)
 
-    # PLANILHA INTERATIVA EDITÁVEL
-    df_editado = st.data_editor(
-        df_matriz,
+    df_saldos_editado = st.data_editor(
+        df_saldos_view,
         use_container_width=True,
         num_rows="dynamic",
         column_config={
-            "Tipo": st.column_config.SelectboxColumn("Tipo", options=["CAIXA", "BANCO", "RECEITA", "DESPESA", "RETIRADA"], required=True),
-            "Item / Categoria": st.column_config.TextColumn("Item / Categoria", required=True),
-            "JANEIRO": st.column_config.NumberColumn("JANEIRO", format="R$ %.2f"),
-            "FEVEREIRO": st.column_config.NumberColumn("FEVEREIRO", format="R$ %.2f"),
-            "MARÇO": st.column_config.NumberColumn("MARÇO", format="R$ %.2f"),
-            "ABRIL": st.column_config.NumberColumn("ABRIL", format="R$ %.2f"),
-            "MAIO": st.column_config.NumberColumn("MAIO", format="R$ %.2f"),
-            "JUNHO": st.column_config.NumberColumn("JUNHO", format="R$ %.2f"),
-            "JULHO": st.column_config.NumberColumn("JULHO", format="R$ %.2f"),
-            "AGOSTO": st.column_config.NumberColumn("AGOSTO", format="R$ %.2f"),
-            "SETEMBRO": st.column_config.NumberColumn("SETEMBRO", format="R$ %.2f"),
-            "OUTUBRO": st.column_config.NumberColumn("OUTUBRO", format="R$ %.2f"),
-            "NOVEMBRO": st.column_config.NumberColumn("NOVEMBRO", format="R$ %.2f"),
-            "DEZEMBRO": st.column_config.NumberColumn("DEZEMBRO", format="R$ %.2f"),
+            "Grupo": st.column_config.SelectboxColumn("Grupo / Conta", options=["Banco do Brasil MRC", "Banco Inter MRC", "BB Torre Forte"], required=True),
+            "Descrição / Tipo": st.column_config.TextColumn("Descrição / Tipo de Aplicação", required=True),
+            "Valor (R$)": st.column_config.NumberColumn("Valor Atual (R$)", format="R$ %.2f", min_value=0.0)
         }
     )
 
-    if st.button("💾 Salvar Alterações na Planilha", type="primary"):
+    if st.button("💾 Salvar Saldos Bancários e Atualizar Data/Hora", type="primary"):
         try:
-            sheet_matriz.clear()
-            sheet_matriz.append_row(list(df_editado.columns))
-            rows_to_save = df_editado.fillna(0).values.tolist()
-            for r in rows_to_save:
-                sheet_matriz.append_row(r)
-            st.success("✅ Planilha salva no Google Sheets com sucesso!")
+            agora_str = datetime.now().strftime("%d/%m/%Y às %H:%M")
+            df_salvar = df_saldos_editado.copy()
+            df_salvar["Ultima_Atualizacao"] = agora_str
+            
+            sheet_saldos_bancarios.clear()
+            sheet_saldos_bancarios.append_row(list(df_salvar.columns))
+            rows_save = df_salvar.fillna(0).values.tolist()
+            for r_s in rows_save:
+                sheet_saldos_bancarios.append_row(r_s)
+                
+            st.success(f"✅ Saldos bancários atualizados com sucesso em **{agora_str}**!")
+            st.cache_data.clear()
+            st.cache_resource.clear()
             st.rerun()
-        except Exception as e:
-            st.error(f"Erro ao salvar planilha: {e}")
+        except Exception as e_sb:
+            st.error(f"Erro ao salvar saldos bancários: {e_sb}")
 
-    # CÁLCULOS DINÂMICOS EM TEMPO REAL
     st.markdown("---")
-    st.subheader("📈 Totais e Sobra / Falta Caixa Reais (Calculados em Tempo Real)")
+    st.subheader("📊 Resumo Consolidado dos Saldos Bancários")
 
-    for m in MESES:
-        if m in df_editado.columns:
-            df_editado[m] = pd.to_numeric(df_editado[m], errors="coerce").fillna(0.0)
-
-    resumo_linhas = []
-
-    # Total Receitas
-    rec_row = {"Linha / Métrica": "1. TOTAL RECEITAS"}
-    for m in MESES:
-        rec_row[m] = df_editado[df_editado["Tipo"] == "RECEITA"][m].sum()
-    resumo_linhas.append(rec_row)
-
-    # Total Despesas
-    desp_row = {"Linha / Métrica": "2. TOTAL DESPESAS"}
-    for m in MESES:
-        desp_row[m] = df_editado[df_editado["Tipo"] == "DESPESA"][m].sum()
-    resumo_linhas.append(desp_row)
-
-    # Resultado Operacional
-    oper_row = {"Linha / Métrica": "3. RESULTADO OPERACIONAL (1 - 2)"}
-    for m in MESES:
-        oper_row[m] = rec_row[m] - desp_row[m]
-    resumo_linhas.append(oper_row)
-
-    # Retiradas
-    ret_row = {"Linha / Métrica": "4. RETIRADAS SÓCIOS + LUCROS"}
-    for m in MESES:
-        ret_row[m] = df_editado[df_editado["Tipo"] == "RETIRADA"][m].sum()
-    resumo_linhas.append(ret_row)
-
-    # Sobra / Falta Caixa
-    sobra_row = {"Linha / Métrica": "5. SOBRA / FALTA CAIXA DO MÊS"}
-    for m in MESES:
-        sobra_row[m] = oper_row[m] - ret_row[m]
-    resumo_linhas.append(sobra_row)
-
-    df_resumo = pd.DataFrame(resumo_linhas)
-
-    def formatar_moeda_view(val):
-        if isinstance(val, (int, float)):
-            return f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        return val
-
-    df_resumo_fmt = df_resumo.copy()
-    for m in MESES:
-        df_resumo_fmt[m] = df_resumo_fmt[m].apply(formatar_moeda_view)
-
-    st.dataframe(df_resumo_fmt, use_container_width=True, hide_index=True)
-
-    # DESTAQUE PONTUAL DO MÊS SELECIONADO
-    st.markdown("---")
-    st.subheader("🎯 Resumo Destaque por Mês")
-
-    mes_destaque = st.selectbox("Selecione o Mês para conferir a Sobra Livre:", MESES, index=9)
-
-    rec_dest = df_editado[df_editado["Tipo"] == "RECEITA"][mes_destaque].sum()
-    desp_dest = df_editado[df_editado["Tipo"] == "DESPESA"][mes_destaque].sum()
-    ret_dest = df_editado[df_editado["Tipo"] == "RETIRADA"][mes_destaque].sum()
-    sobra_dest = (rec_dest - desp_dest) - ret_dest
-
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric(f"Receitas ({mes_destaque})", f"R$ {rec_dest:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-    k2.metric(f"Despesas ({mes_destaque})", f"R$ {desp_dest:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-    k3.metric(f"Retiradas ({mes_destaque})", f"R$ {ret_dest:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-    k4.metric(f"SOBRA LIVRE ({mes_destaque})", f"R$ {sobra_dest:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), delta=f"{sobra_dest:,.2f}")
+    c_sb1, c_sb2, c_sb3 = st.columns(3)
+    c_sb1.metric("SALDO TOTAL BANCOS MRC", f"R$ {tot_bancos_mrc:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    c_sb2.metric("SALDO TOTAL BANCOS TORRE FORTE", f"R$ {tot_tf:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    c_sb3.metric("SALDOS TOTAIS CONSOLIDADOS", f"R$ {tot_geral_bancos:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
