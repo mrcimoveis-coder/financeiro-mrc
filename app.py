@@ -470,12 +470,11 @@ with aba_editar:
                         except Exception as e:
                             st.error(f"❌ Erro ao excluir lançamento: {e}")
 
-# --- ABA 5: PROJEÇÃO & DRE ANUAL (NOVA) ---
+# --- ABA 5: PROJEÇÃO & DRE ANUAL (Saldos Manuais + DRE Consolidada) ---
 with aba_dre:
     st.subheader("📅 Planejamento, Saldos e DRE Anual (2026)")
     st.write("Atualize manualmente os saldos das contas e cofres sem alterar os lançamentos operacionais.")
 
-    # Conexão com aba dedicada no Google Sheets para armazenar saldos informados
     sheet_saldos = conectar_google_sheets(nome_aba="Saldos_Manuais")
     saldos_raw = sheet_saldos.get_all_records()
     df_saldos = pd.DataFrame(saldos_raw) if saldos_raw else pd.DataFrame(columns=["Conta", "Valor"])
@@ -537,7 +536,6 @@ with aba_dre:
     st.markdown("---")
     st.markdown("### 📊 2. Demonstração do Resultado (DRE Consolidada)")
 
-    # Cálculos Consolidados da DRE
     tot_investimentos = val_fundo_bb + val_fundo_inter + val_tpf_selic
     
     rec_confirmada = df[(df["Tipo de Operação"] == "Receita") & (df["Status"].astype(str).str.lower() == "confirmado")]["Valor_Num"].sum() if not df.empty and "Tipo de Operação" in df.columns else 0.0
