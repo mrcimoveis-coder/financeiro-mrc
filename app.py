@@ -5,7 +5,9 @@ from google.oauth2.service_account import Credentials
 import plotly.express as px
 from datetime import datetime
 
-# 1. Configuração da Página
+# -----------------------------------------------------------------------------
+# 1. CONFIGURAÇÃO DA PÁGINA
+# -----------------------------------------------------------------------------
 st.set_page_config(page_title="Gestão Financeira | MRC Imóveis", page_icon="💰", layout="wide")
 
 try:
@@ -13,7 +15,9 @@ try:
 except Exception:
     pass
 
-# 2. Conexão com Google Sheets via ID
+# -----------------------------------------------------------------------------
+# 2. CONEXÃO GOOGLE SHEETS
+# -----------------------------------------------------------------------------
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
@@ -36,7 +40,9 @@ def conectar_google_sheets(nome_aba=None):
             return spreadsheet.add_worksheet(title=nome_aba, rows="100", cols="20")
     return spreadsheet.sheet1
 
-# 3. Autenticação de Acesso
+# -----------------------------------------------------------------------------
+# 3. AUTENTICAÇÃO DE ACESSO
+# -----------------------------------------------------------------------------
 USUARIOS = {
     "admin": "431360#In",
     "marcelo": "431360Fi",
@@ -62,7 +68,9 @@ if not st.session_state.autenticado_fin:
             st.error("❌ Usuário ou senha incorretos.")
     st.stop()
 
-# 4. Interface Principal
+# -----------------------------------------------------------------------------
+# 4. INTERFACE PRINCIPAL
+# -----------------------------------------------------------------------------
 try:
     sheet = conectar_google_sheets()
 except Exception as e:
@@ -80,7 +88,6 @@ aba_dash, aba_consulta, aba_lancamento, aba_editar, aba_dre = st.tabs([
     "📅 Projeção & DRE Anual"
 ])
 
-# TRATAMENTO INTELIGENTE DE VALORES MONETÁRIOS (PONTO x VÍRGULA)
 def tratar_valor_num_inteligente(val):
     if pd.isna(val):
         return 0.0
@@ -109,7 +116,7 @@ def tratar_valor_num_inteligente(val):
     except Exception:
         return 0.0
 
-# Carregar Dados
+# Carregar Dados Principais
 dados_raw = sheet.get_all_records()
 df = pd.DataFrame(dados_raw) if dados_raw else pd.DataFrame()
 
@@ -165,7 +172,9 @@ else:
     df["Periodo"] = None
     df["Mes_Ano_Label"] = None
 
-# --- ABA 1: DASHBOARD & GRÁFICOS ---
+# -----------------------------------------------------------------------------
+# ABA 1: DASHBOARD & GRÁFICOS
+# -----------------------------------------------------------------------------
 with aba_dash:
     if df.empty:
         st.info("Nenhum registro cadastrado no financeiro para gerar indicadores.")
@@ -247,7 +256,9 @@ with aba_dash:
         fig_res.update_xaxes(categoryorder="array", categoryarray=ordem_res_cronologica)
         st.plotly_chart(fig_res, use_container_width=True)
 
-# --- ABA 2: PESQUISA E HISTÓRICO ---
+# -----------------------------------------------------------------------------
+# ABA 2: PESQUISA E HISTÓRICO
+# -----------------------------------------------------------------------------
 with aba_consulta:
     st.subheader("Filtros Avançados de Pesquisa")
     if not df.empty:
@@ -280,7 +291,9 @@ with aba_consulta:
         cols_existentes = [c for c in cols_desejadas if c in df_f.columns]
         st.dataframe(df_f[cols_existentes], use_container_width=True, hide_index=True)
 
-# --- ABA 3: NOVO LANÇAMENTO ---
+# -----------------------------------------------------------------------------
+# ABA 3: NOVO LANÇAMENTO
+# -----------------------------------------------------------------------------
 with aba_lancamento:
     st.subheader("Registrar Nova Operação Financeira")
     with st.form("form_financeiro", clear_on_submit=True):
@@ -321,7 +334,9 @@ with aba_lancamento:
                 except Exception as e:
                     st.error(f"Erro ao salvar: {e}")
 
-# --- ABA 4: EDITAR E EXCLUIR ---
+# -----------------------------------------------------------------------------
+# ABA 4: EDITAR E EXCLUIR
+# -----------------------------------------------------------------------------
 with aba_editar:
     st.subheader("Alterar ou Excluir Registro Financeiro")
     
@@ -470,10 +485,12 @@ with aba_editar:
                         except Exception as e:
                             st.error(f"❌ Erro ao excluir lançamento: {e}")
 
-# --- ABA 5: PROJEÇÃO & DRE ANUAL (Saldos Manuais + DRE Consolidada) ---
+# -----------------------------------------------------------------------------
+# ABA 5: PROJEÇÃO & DRE MATRICIAL ANUAL
+# -----------------------------------------------------------------------------
 with aba_dre:
-    st.subheader("📅 Planejamento, Saldos e DRE Anual (2026)")
-    st.write("Atualize manualmente os saldos das contas e cofres sem alterar os lançamentos operacionais.")
+    st.subheader("📅 Projeção & DRE Matricial Anual (Janeiro a Dezembro)")
+    st.write("Acompanhe o orçamento de cada mês. Qualquer ajuste nas receitas ou despesas recalcula a Sobra Mensal em tempo real.")
 
     sheet_saldos = conectar_google_sheets(nome_aba="Saldos_Manuais")
     saldos_raw = sheet_saldos.get_all_records()
@@ -486,8 +503,30 @@ with aba_dre:
                 return tratar_valor_num_inteligente(f.iloc[0]["Valor"])
         return valor_padrao
 
+    lista_meses_nomes = ["JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO", "JULHO", "AGOSTO", "SETEMBRO", "OUTUBRO", "NOVEMBRO", "DEZEMBRO"]
+
+    # Processamento dos lançamentos em grade matricial (Linha x Mês)
+    dict_matrix = {}
+    
+    if not df.empty:
+        for m_num, m_nome in MONTH_NAMES_PT.items():
+            df_m = df[df["Periodo"].apply(lambda p: p.month if pd.notna(p) else 0) == m_num]
+            
+            rec_m = df_m[df_m["Tipo de Operação"] == "Receita"].groupby("Categoria")["Valor_Num"].sum().to_dict() if "Tipo de Operação" in df_m.columns else {}
+            desp_m = df_m[df_m["Tipo de Operação"] == "Despesa"].groupby("Categoria")["Valor_Num"].sum().to_dict() if "Tipo de Operação" in df_m.columns else {}
+            
+            dict_matrix[m_nome] = {
+                "Receita_Total": df_m[df_m["Tipo de Operação"] == "Receita"]["Valor_Num"].sum() if "Tipo de Operação" in df_m.columns else 0.0,
+                "Despesa_Total": df_m[df_m["Tipo de Operação"] == "Despesa"]["Valor_Num"].sum() if "Tipo de Operação" in df_m.columns else df_m["Valor_Num"].sum(),
+                "Receitas_Cat": rec_m,
+                "Despesas_Cat": desp_m
+            }
+    else:
+        for m_nome in lista_meses_nomes:
+            dict_matrix[m_nome] = {"Receita_Total": 0.0, "Despesa_Total": 0.0, "Receitas_Cat": {}, "Despesas_Cat": {}}
+
     st.markdown("---")
-    st.markdown("### 🏦 1. Saldos das Contas & Cofres (Atualização Manual)")
+    st.markdown("### 🏦 1. Saldos Manuais de Caixa & Bancos")
     
     with st.form("form_saldos_manuais"):
         col_s1, col_s2, col_s3 = st.columns(3)
@@ -503,8 +542,8 @@ with aba_dre:
             
         with col_s3:
             val_cc_tf = st.number_input("Conta TF + Aplicação (R$)", value=get_saldo_manual("CC_TF", 20816.96), format="%.2f")
-            val_ret_socios = st.number_input("Retirada Sócios Mês Atual (R$)", value=get_saldo_manual("Retirada_Socios", 28000.0), format="%.2f")
-            val_ret_lucros = st.number_input("Retirada Lucros Adicionais (R$)", value=get_saldo_manual("Retirada_Lucros", 30000.0), format="%.2f")
+            val_ret_socios = st.number_input("Retirada Sócios Mensal (R$)", value=get_saldo_manual("Retirada_Socios", 28000.0), format="%.2f")
+            val_ret_lucros = st.number_input("Retirada Lucros Adicionais Mensal (R$)", value=get_saldo_manual("Retirada_Lucros", 30000.0), format="%.2f")
 
         btn_salvar_saldos = st.form_submit_button("💾 Atualizar Saldos Manuais", type="primary")
 
@@ -534,37 +573,65 @@ with aba_dre:
                 st.error(f"Erro ao salvar saldos: {e_s}")
 
     st.markdown("---")
-    st.markdown("### 📊 2. Demonstração do Resultado (DRE Consolidada)")
+    st.markdown("### 📊 2. Tabela Matricial Anual de Projeção & Sobra Mensal")
+    st.caption("Alterne o mês selecionado para simular e ajustar projeções de receitas ou despesas pontuais.")
 
-    tot_investimentos = val_fundo_bb + val_fundo_inter + val_tpf_selic
+    rows_matriz = []
     
-    rec_confirmada = df[(df["Tipo de Operação"] == "Receita") & (df["Status"].astype(str).str.lower() == "confirmado")]["Valor_Num"].sum() if not df.empty and "Tipo de Operação" in df.columns else 0.0
-    desp_confirmada = df[(df["Tipo de Operação"] == "Despesa") & (df["Status"].astype(str).str.lower() == "confirmado")]["Valor_Num"].sum() if not df.empty and "Tipo de Operação" in df.columns else 0.0
-    
-    resultado_efetivo = rec_confirmada - desp_confirmada - val_ret_socios - val_ret_lucros
-    fundos_e_resultados = tot_investimentos + resultado_efetivo
-    total_geral = fundos_e_resultados + val_cofre
+    row_rec = {"Métrica / Mês": "1. TOTAL RECEITAS"}
+    for m in lista_meses_nomes:
+        row_rec[m] = dict_matrix[m]["Receita_Total"]
+    rows_matriz.append(row_rec)
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Dinheiro em Cofre", f"R$ {val_cofre:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-    m2.metric("Total Investimentos / Selic", f"R$ {tot_investimentos:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-    m3.metric("Fundos & Resultados", f"R$ {fundos_e_resultados:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-    m4.metric("TOTAL GERAL DA EMPRESA", f"R$ {total_geral:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    row_desp = {"Métrica / Mês": "2. TOTAL DESPESAS"}
+    for m in lista_meses_nomes:
+        row_desp[m] = dict_matrix[m]["Despesa_Total"]
+    rows_matriz.append(row_desp)
+
+    row_oper = {"Métrica / Mês": "3. RESULTADO OPERACIONAL (1 - 2)"}
+    for m in lista_meses_nomes:
+        row_oper[m] = dict_matrix[m]["Receita_Total"] - dict_matrix[m]["Despesa_Total"]
+    rows_matriz.append(row_oper)
+
+    row_ret = {"Métrica / Mês": "4. RETIRADAS SÓCIOS + LUCROS"}
+    for m in lista_meses_nomes:
+        row_ret[m] = val_ret_socios + val_ret_lucros
+    rows_matriz.append(row_ret)
+
+    row_sobra = {"Métrica / Mês": "5. SOBRA / FALTA CAIXA DO MÊS"}
+    for m in lista_meses_nomes:
+        sobra_m = (dict_matrix[m]["Receita_Total"] - dict_matrix[m]["Despesa_Total"]) - (val_ret_socios + val_ret_lucros)
+        row_sobra[m] = sobra_m
+    rows_matriz.append(row_sobra)
+
+    df_matriz_view = pd.DataFrame(rows_matriz)
+
+    def formatar_linha_moeda(val):
+        if isinstance(val, (int, float)):
+            return f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        return val
+
+    df_matriz_fmt = df_matriz_view.copy()
+    for col_m in lista_meses_nomes:
+        df_matriz_fmt[col_m] = df_matriz_fmt[col_m].apply(formatar_linha_moeda)
+
+    st.dataframe(df_matriz_fmt, use_container_width=True, hide_index=True)
 
     st.markdown("---")
-    st.markdown("##### 📋 Resumo Consolidado do Mês")
+    st.markdown("### 🎯 3. Simulação e Ajuste de Projeção Mês a Mês")
     
-    dre_table_data = [
-        {"Item / Conta": "TOTAL GERAL", "Valor (R$)": f"R$ {total_geral:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
-        {"Item / Conta": "  ├── Dinheiro em Cofre", "Valor (R$)": f"R$ {val_cofre:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
-        {"Item / Conta": "  └── FUNDOS E RESULTADOS", "Valor (R$)": f"R$ {fundos_e_resultados:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
-        {"Item / Conta": "      ├── Fundo BB", "Valor (R$)": f"R$ {val_fundo_bb:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
-        {"Item / Conta": "      ├── Fundo Inter", "Valor (R$)": f"R$ {val_fundo_inter:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
-        {"Item / Conta": "      ├── TPF Selic", "Valor (R$)": f"R$ {val_tpf_selic:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
-        {"Item / Conta": "      └── RESULTADO EFETIVO DA OPERAÇÃO", "Valor (R$)": f"R$ {resultado_efetivo:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
-        {"Item / Conta": "          ├── Receitas Confirmadas", "Valor (R$)": f"R$ {rec_confirmada:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
-        {"Item / Conta": "          ├── Despesas Confirmadas", "Valor (R$)": f"- R$ {desp_confirmada:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
-        {"Item / Conta": "          ├── Retirada de Sócios", "Valor (R$)": f"- R$ {val_ret_socios:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
-        {"Item / Conta": "          └── Retirada Lucros Adicionais", "Valor (R$)": f"- R$ {val_ret_lucros:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")},
-    ]
-    st.dataframe(pd.DataFrame(dre_table_data), use_container_width=True, hide_index=True)
+    mes_foco = st.selectbox("Selecione o Mês para analisar ou ajustar a Sobra:", lista_meses_nomes, index=9)
+    
+    rec_foco = dict_matrix[mes_foco]["Receita_Total"]
+    desp_foco = dict_matrix[mes_foco]["Despesa_Total"]
+    ret_foco = val_ret_socios + val_ret_lucros
+    sobra_foco = (rec_foco - desp_foco) - ret_foco
+
+    col_mf1, col_mf2, col_mf3, col_mf4 = st.columns(4)
+    col_mf1.metric(f"Receitas ({mes_foco})", f"R$ {rec_foco:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    col_mf2.metric(f"Despesas ({mes_foco})", f"R$ {desp_foco:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    col_mf3.metric(f"Retiradas ({mes_foco})", f"R$ {ret_foco:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    
+    col_mf4.metric(f"SOBRA LIVRE ({mes_foco})", f"R$ {sobra_foco:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), delta=f"{sobra_foco:,.2f}")
+
+    st.info(f"💡 **Como ajustar a sobra de {mes_foco}:** Para alterar o valor a distribuir de {mes_foco}, basta adicionar uma nova receita/despesa ou editar um valor existente na aba **`✏️ Editar / Excluir`** marcando o mês como `{mes_foco}/2026`. O total da Sobra acima atualizará na hora.")
