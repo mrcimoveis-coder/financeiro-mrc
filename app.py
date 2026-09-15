@@ -322,7 +322,7 @@ with tab_pending:
         f1, f2, f3 = st.columns(3)
         month_filter = f1.selectbox("Mês", ["Todos"] + list(MESES.values()), key="pending_month")
         type_filter = f2.selectbox("Tipo", ["Todos", "Receita", "Despesa"], key="pending_type")
-        status_filter = f3.selectbox("Situação", ["Todos", "Pendente", "Previsto", "Atrasado", "Parcial"], key="pending_status")
+        status_filter = f3.selectbox("Situação", ["Todos", "Pendente", "Previsto", "Confirmado", "Atrasado", "Parcial"], key="pending_status")
         filtered = open_df[open_df["competencia"].dt.year == selected_year].copy()
         if month_filter != "Todos":
             filtered = filtered[filtered["competencia"].dt.month == list(MESES.values()).index(month_filter) + 1]

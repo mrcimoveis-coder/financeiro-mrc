@@ -25,8 +25,8 @@ MESES = {
 }
 MESES_NUM = {nome: numero for numero, nome in MESES.items()}
 
-STATUS_ABERTOS = {"pendente", "previsto", "atrasado", "parcial"}
-STATUS_QUITADOS = {"quitado", "recebido", "confirmado", "pago"}
+STATUS_ABERTOS = {"pendente", "previsto", "confirmado", "atrasado", "parcial"}
+STATUS_QUITADOS = {"quitado", "recebido", "pago"}
 
 
 def parse_money(value) -> float:
@@ -92,6 +92,8 @@ def normalize_status(value: str) -> str:
         return "Atrasado"
     if text == "parcial":
         return "Parcial"
+    if text == "confirmado":
+        return "Confirmado"
     if text == "previsto":
         return "Previsto"
     return "Pendente"
