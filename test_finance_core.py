@@ -1,7 +1,14 @@
 import unittest
 from datetime import date
 
-from finance_core import monthly_forecast, normalize_launches, projection, realization_tracking, variance
+from finance_core import (
+    monthly_forecast,
+    normalize_launches,
+    operational_balance_item,
+    projection,
+    realization_tracking,
+    variance,
+)
 
 
 def launch(description, launch_type, planned, actual, status):
@@ -18,6 +25,15 @@ def launch(description, launch_type, planned, actual, status):
 
 
 class PartialRealizationTests(unittest.TestCase):
+    def test_pending_construction_adjustments_are_treated_as_a_balance(self):
+        record = launch("Acerto Obras Pendentes", "Receita", 25_000, 0, "Pendente")
+
+        self.assertEqual(
+            operational_balance_item(record),
+            ("Acertos de obras pendentes", 25_000),
+        )
+        self.assertTrue(normalize_launches([record]).empty)
+
     def test_partial_receipts_and_expenses_use_only_the_remaining_amount(self):
         rows = [
             launch("Aluguel", "Receita", 85_000, 82_000, "Parcial"),

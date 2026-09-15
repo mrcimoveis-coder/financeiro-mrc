@@ -121,6 +121,8 @@ def operational_balance_item(record: dict) -> tuple[str, float] | None:
         label = "Empréstimo a receber — Marcos Veloso"
     elif description == "emprestimo compra sala clsw 304":
         label = "Empréstimo a receber — Compra Sala CLSW 304"
+    elif "acerto" in description and "obra" in description and "pendente" in description:
+        label = "Acertos de obras pendentes"
     else:
         return None
 

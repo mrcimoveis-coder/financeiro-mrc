@@ -8,6 +8,7 @@ Aplicativo Streamlit integrado ao Google Sheets `Financeiro_MRC`.
 - Somente receitas e despesas abertas entram na projeção futura.
 - Cada lançamento mantém o valor previsto, o total já pago ou recebido e o saldo pendente.
 - Pagamentos e recebimentos parciais reduzem somente o que ainda falta na projeção.
+- Posições variáveis, como empréstimos e acertos de obras pendentes, são tratadas como saldos e não como novas receitas recorrentes.
 - Ao encerrar um lançamento, o valor previsto deixa de afetar a projeção, mesmo que o valor final seja diferente.
 - O valor realizado permanece no histórico para mostrar o andamento e as diferenças finais.
 - O forecast gera ocorrências mensais, trimestrais, semestrais ou anuais para qualquer ano.
