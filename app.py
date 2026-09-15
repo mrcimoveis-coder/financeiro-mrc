@@ -29,6 +29,7 @@ from finance_core import (
 
 
 SHEET_ID = "1WaIP5FJpudjKvOXw0pQe7YfJlTPrISAmaBDZswuCsxM"
+CAUCOES_SHEET_ID = "1OE3lN6bLUAemM_PyrsrVtN4BqMc-zrH1sCy5qzWGmrk"
 MAIN_HEADERS = [
     "Mês", "Tipo de Operação", "Categoria", "Corretor / Envolvido", "Histórico",
     "Valor (R$)", "Status", "Observação", "ID", "Competência", "Vencimento",
@@ -228,6 +229,34 @@ def save_parameters(ws, values: dict[str, float]) -> None:
     append_dicts(ws, PARAM_HEADERS, new_rows)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def caution_projected_balance(year: int) -> float:
+    """Return the December projection for active deposits in the Cauções app."""
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    info = dict(st.secrets["gcp_service_account"])
+    info["private_key"] = info.get("private_key", "").replace("\\n", "\n")
+    credentials = Credentials.from_service_account_info(info, scopes=scopes)
+    records = gspread.authorize(credentials).open_by_key(CAUCOES_SHEET_ID).sheet1.get_all_records(
+        numericise_ignore=["all"]
+    )
+    exponent = max(0, int(year) - 2026)
+    total = 0.0
+    for record in records:
+        if str(record.get("Status", "")).strip().upper() != "ATIVA":
+            continue
+        base = parse_money(record.get("Projeção Dez/26 (R$)", 0))
+        rate_text = str(record.get("% Taxa Anual", "2")).replace("%", "").replace(",", ".").strip()
+        try:
+            rate = float(rate_text) / 100.0
+        except (TypeError, ValueError):
+            rate = 0.02
+        total += round(base * ((1.0 + rate) ** exponent), 2)
+    return round(total, 2)
+
+
 def account_balances(ws) -> tuple[pd.DataFrame, float]:
     records = load_records(ws)
     frame = pd.DataFrame(records)
@@ -294,12 +323,22 @@ tab_summary, tab_pending, tab_launch, tab_forecast, tab_balances, tab_history, t
 
 monthly = monthly_forecast(launches, selected_year)
 projected = projection(monthly, bank_balance, today)
+try:
+    synced_caution = caution_projected_balance(selected_year)
+    caution_sync_error = None
+except Exception as exc:
+    synced_caution = float(parameters["caucoes_protegidas"])
+    caution_sync_error = str(exc)
+
+if caution_sync_error is None and abs(float(parameters["caucoes_protegidas"]) - synced_caution) > 0.005:
+    save_parameters(ws_parameters, {"caucoes_protegidas": synced_caution})
+    parameters["caucoes_protegidas"] = synced_caution
 open_df = open_launches(launches)
 future_open = open_df[open_df["competencia"] >= pd.Timestamp(today.year, today.month, 1)] if not open_df.empty else open_df
 pending_income = float(future_open.loc[future_open["tipo"] == "Receita", "previsto"].sum()) if not future_open.empty else 0.0
 pending_expense = float(future_open.loc[future_open["tipo"] == "Despesa", "previsto"].sum()) if not future_open.empty else 0.0
 year_end = float(projected.iloc[-1]["saldo_projetado"]) if not projected.empty else bank_balance
-protected = parameters["caucoes_protegidas"] + parameters["reserva_mrc"]
+protected = synced_caution + parameters["reserva_mrc"]
 distributable = year_end - protected
 
 with tab_summary:
@@ -589,6 +628,13 @@ with tab_history:
 
 with tab_settings:
     st.subheader("Reservas, distribuição e dólar")
+    if caution_sync_error is None:
+        st.success(
+            f"Cauções protegidas sincronizadas com a Gestão de Cauções: {format_brl(synced_caution)} "
+            f"(projeção de dezembro/{selected_year})."
+        )
+    else:
+        st.warning("A Gestão de Cauções está temporariamente indisponível. O valor manual salvo será usado até a próxima sincronização.")
     quote, quote_date = ptax_sale(today)
     if quote:
         st.info(f"PTAX de venda disponível: R$ {quote:.4f} em {quote_date.strftime('%d/%m/%Y')}.")
@@ -596,7 +642,14 @@ with tab_settings:
         st.warning("Não foi possível consultar a PTAX agora. A cotação manual poderá ser usada.")
     with st.form("parameters_form"):
         a, b = st.columns(2)
-        caution = a.number_input("Cauções protegidas", min_value=0.0, value=float(parameters["caucoes_protegidas"]), step=1000.0)
+        caution = a.number_input(
+            "Cauções protegidas",
+            min_value=0.0,
+            value=float(synced_caution),
+            step=1000.0,
+            disabled=caution_sync_error is None,
+            help="Sincronizado automaticamente com a projeção de dezembro da Gestão de Cauções. O campo fica editável apenas se a integração estiver indisponível.",
+        )
         reserve = b.number_input("Reserva MRC", min_value=0.0, value=float(parameters["reserva_mrc"]), step=1000.0)
         c, d = st.columns(2)
         partner1 = c.number_input("Percentual sócio 1", min_value=0.0, max_value=100.0, value=float(parameters["percentual_socio_1"]), step=1.0)
