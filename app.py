@@ -15,12 +15,19 @@ from google.oauth2.service_account import Credentials
 
 from finance_core import (
     MESES,
+    distributable_balance,
     format_brl,
     fx_balance_brl,
+    is_advance_customer_payment_balance,
     is_caution_interest_reserve,
+    is_customer_pass_through_balance,
+    is_distribution_liability_balance,
+    is_pending_construction_adjustment_balance,
     make_recurrence_rows,
     monthly_forecast,
+    monthly_realized_history,
     new_id,
+    normalize_label,
     normalize_launches,
     open_launches,
     parse_money,
@@ -275,6 +282,15 @@ def account_balances(ws) -> tuple[pd.DataFrame, float]:
     return frame, float(actual["Valor Num"].sum())
 
 
+def ensure_balance_rows(ws) -> None:
+    records = load_records(ws)
+    existing = {normalize_label(record.get("Conta")) for record in records}
+    defaults = ["Boletos pagos adiantados"]
+    missing = [[label, 0] for label in defaults if normalize_label(label) not in existing]
+    if missing:
+        ws.append_rows(missing, value_input_option="USER_ENTERED")
+
+
 def display_money_table(frame: pd.DataFrame, columns: list[str]) -> None:
     view = frame.copy()
     for column in columns:
@@ -304,6 +320,7 @@ except Exception as exc:
 records = load_records(ws_forecast)
 launches = normalize_launches(records)
 history_launches = normalize_launches(load_records(ws_history))
+ensure_balance_rows(ws_balances)
 balances_df, brl_balance = account_balances(ws_balances)
 parameters = load_parameters(ws_parameters)
 today = date.today()
@@ -315,6 +332,13 @@ interest_reserve_signed = float(
 ) if not balances_df.empty else 0.0
 interest_reserve = abs(interest_reserve_signed)
 brl_balance -= interest_reserve_signed
+distribution_liabilities = float(
+    balances_df.loc[
+        balances_df["Conta"].map(is_distribution_liability_balance),
+        "Valor Num",
+    ].sum()
+) if not balances_df.empty else 0.0
+brl_balance -= distribution_liabilities
 automatic_quote, automatic_quote_date = ptax_sale(today)
 saved_quote = float(parameters["ultima_cotacao_usd"])
 manual_quote = float(parameters["cotacao_manual_usd"])
@@ -362,7 +386,7 @@ pending_income = float(future_open.loc[future_open["tipo"] == "Receita", "penden
 pending_expense = float(future_open.loc[future_open["tipo"] == "Despesa", "pendente"].sum()) if not future_open.empty else 0.0
 year_end = float(projected.iloc[-1]["saldo_projetado"]) if not projected.empty else bank_balance
 protected = synced_caution + parameters["reserva_mrc"] + interest_reserve
-distributable = year_end - protected
+distributable = distributable_balance(year_end, protected, distribution_liabilities)
 
 with tab_summary:
     c1, c2, c3, c4 = st.columns(4)
@@ -735,6 +759,16 @@ with tab_balances:
     )
     if interest_reserve:
         st.info(f"Reserva protegida para juros de cauções: {format_brl(interest_reserve)}.")
+    liability_labels = (
+        (is_customer_pass_through_balance, "Superlógica — repasses a clientes"),
+        (is_pending_construction_adjustment_balance, "Acertos de obras pendentes"),
+        (is_advance_customer_payment_balance, "Boletos pagos adiantados"),
+    )
+    for checker, label in liability_labels:
+        amount = float(balances_df.loc[balances_df["Conta"].map(checker), "Valor Num"].sum())
+        if amount:
+            direction = "reduz" if amount > 0 else "aumenta"
+            st.info(f"{label}: {format_brl(amount)}. Este valor {direction} a sobra disponível para distribuição.")
     edit = balances_df[BALANCE_HEADERS].copy()
     edited = st.data_editor(edit, use_container_width=True, hide_index=True, num_rows="dynamic")
     if st.button("Salvar todos os saldos", type="primary"):
@@ -745,11 +779,27 @@ with tab_balances:
         st.cache_data.clear()
 
 with tab_history:
-    st.subheader("Histórico de realizações")
+    st.subheader("Histórico consolidado mensal")
     combined_history = pd.concat([history_launches, launches], ignore_index=True) if not history_launches.empty else launches
+    consolidated = monthly_realized_history(combined_history, selected_year)
+    history_cutoff = pd.Timestamp(selected_year, 12, 1)
+    if selected_year == today.year:
+        history_cutoff = pd.Timestamp(today.year, today.month, 1)
+    consolidated = consolidated[consolidated["competencia"] <= history_cutoff].copy()
+    consolidated_view = consolidated[[
+        "mes", "receitas_realizadas", "despesas_realizadas", "resultado_realizado"
+    ]]
+    display_money_table(
+        consolidated_view,
+        ["receitas_realizadas", "despesas_realizadas", "resultado_realizado"],
+    )
+
+    st.subheader("Lançamentos históricos")
     tracked = realization_tracking(combined_history)
     tracked = tracked[
-        (tracked["competencia"].dt.year == selected_year) & (tracked["realizado"] > 0)
+        (tracked["competencia"].dt.year == selected_year)
+        & (tracked["competencia"] <= history_cutoff)
+        & ((tracked["realizado"] > 0) | (tracked["previsto"] > 0))
     ].copy() if not tracked.empty else tracked
     if tracked.empty:
         st.info("Ainda não existem pagamentos ou recebimentos informados.")

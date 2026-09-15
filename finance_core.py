@@ -115,7 +115,42 @@ def normalize_label(value: object) -> str:
 
 def is_caution_interest_reserve(value: object) -> bool:
     text = normalize_label(value)
-    return "juros" in text and "caucao" in text
+    return "juros" in text and ("caucao" in text or "reserva protegida" in text)
+
+
+def is_customer_pass_through_balance(value: object) -> bool:
+    text = normalize_label(value)
+    return "superlogica" in text or "repasses a clientes" in text
+
+
+def is_advance_customer_payment_balance(value: object) -> bool:
+    text = normalize_label(value)
+    return "boleto" in text and "pago" in text and "adiant" in text
+
+
+def is_pending_construction_adjustment_balance(value: object) -> bool:
+    text = normalize_label(value)
+    return "acerto" in text and "obra" in text and "pendente" in text
+
+
+def is_distribution_liability_balance(value: object) -> bool:
+    return any(
+        checker(value)
+        for checker in (
+            is_customer_pass_through_balance,
+            is_advance_customer_payment_balance,
+            is_pending_construction_adjustment_balance,
+        )
+    )
+
+
+def customer_pass_through_distribution_effect(value: object) -> float:
+    """Positive client payables reduce distribution; negative balances increase it."""
+    return -parse_money(value)
+
+
+def distributable_balance(year_end: float, protected: float, liabilities: float = 0.0) -> float:
+    return float(year_end) - float(protected) - float(liabilities)
 
 
 def operational_balance_item(record: dict) -> tuple[str, float] | None:
@@ -131,7 +166,7 @@ def operational_balance_item(record: dict) -> tuple[str, float] | None:
         label = "Empréstimo a receber — Marcos Veloso"
     elif description == "emprestimo compra sala clsw 304":
         label = "Empréstimo a receber — Compra Sala CLSW 304"
-    elif "acerto" in description and "obra" in description and "pendente" in description:
+    elif is_pending_construction_adjustment_balance(description):
         label = "Acertos de obras pendentes"
     elif "reserva" in description and "dolar" in description:
         label = "Reserva em dólar"
@@ -241,6 +276,26 @@ def monthly_forecast(df: pd.DataFrame, year: int) -> pd.DataFrame:
         if column not in months:
             months[column] = 0.0
     months["resultado"] = months["receitas"] - months["despesas"]
+    return months
+
+
+def monthly_realized_history(df: pd.DataFrame, year: int) -> pd.DataFrame:
+    months = pd.DataFrame({"competencia": pd.date_range(f"{year}-01-01", f"{year}-12-01", freq="MS")})
+    months["mes"] = months["competencia"].dt.month.map(MESES)
+    tracked = realization_tracking(df)
+    if tracked.empty:
+        months["receitas_realizadas"] = 0.0
+        months["despesas_realizadas"] = 0.0
+        months["resultado_realizado"] = 0.0
+        return months
+    tracked = tracked[(tracked["competencia"].dt.year == year) & (tracked["realizado"] > 0)].copy()
+    grouped = tracked.groupby(["competencia", "tipo"], dropna=False)["realizado"].sum().unstack(fill_value=0)
+    grouped = grouped.rename(columns={"Receita": "receitas_realizadas", "Despesa": "despesas_realizadas"}).reset_index()
+    months = months.merge(grouped, on="competencia", how="left").fillna(0.0)
+    for column in ("receitas_realizadas", "despesas_realizadas"):
+        if column not in months:
+            months[column] = 0.0
+    months["resultado_realizado"] = months["receitas_realizadas"] - months["despesas_realizadas"]
     return months
 
 

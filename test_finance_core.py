@@ -2,11 +2,18 @@ import unittest
 from datetime import date
 
 from finance_core import (
+    customer_pass_through_distribution_effect,
+    distributable_balance,
     monthly_forecast,
+    monthly_realized_history,
     normalize_launches,
     operational_balance_item,
     fx_balance_brl,
+    is_advance_customer_payment_balance,
     is_caution_interest_reserve,
+    is_customer_pass_through_balance,
+    is_distribution_liability_balance,
+    is_pending_construction_adjustment_balance,
     projection,
     realization_tracking,
     variance,
@@ -27,6 +34,46 @@ def launch(description, launch_type, planned, actual, status):
 
 
 class PartialRealizationTests(unittest.TestCase):
+    def test_legacy_confirmed_rows_remain_in_monthly_history(self):
+        legacy_revenue = {
+            "Mês": "10/01/2026",
+            "Tipo de Operação": "Receita",
+            "Histórico": "Receita mensal consolidada",
+            "Valor (R$)": 100_000,
+            "Status": "confirmado",
+        }
+        legacy_expense = {
+            "Mês": "JANEIRO",
+            "Tipo de Operação": "Despesa",
+            "Histórico": "Despesa consolidada",
+            "Valor (R$)": 70_000,
+            "Status": "confirmado",
+        }
+        normalized = normalize_launches([legacy_revenue, legacy_expense])
+        january = monthly_realized_history(normalized, 2026).iloc[0]
+
+        self.assertEqual(january["receitas_realizadas"], 100_000)
+        self.assertEqual(january["despesas_realizadas"], 70_000)
+        self.assertEqual(january["resultado_realizado"], 30_000)
+
+    def test_balance_liabilities_reduce_distribution_when_positive(self):
+        self.assertTrue(is_advance_customer_payment_balance("Boletos pagos adiantados"))
+        self.assertTrue(is_pending_construction_adjustment_balance("Acertos de obras pendentes"))
+        self.assertTrue(is_distribution_liability_balance("Boletos pagos adiantados"))
+        self.assertTrue(is_distribution_liability_balance("Acertos de obras pendentes"))
+        self.assertEqual(distributable_balance(100_000, 0, 10_000), 90_000)
+        self.assertEqual(distributable_balance(100_000, 0, -10_000), 110_000)
+
+    def test_corrupted_caution_label_is_still_protected(self):
+        self.assertTrue(is_caution_interest_reserve("Reserva protegida - Juros de caucoes"))
+        self.assertTrue(is_caution_interest_reserve("Reserva protegida � Juros de cau��es"))
+
+    def test_customer_pass_through_uses_inverted_distribution_sign(self):
+        self.assertTrue(is_customer_pass_through_balance("Superlógica — repasses a clientes"))
+        self.assertTrue(is_customer_pass_through_balance("Saldos Disponíveis Superlogica"))
+        self.assertEqual(customer_pass_through_distribution_effect(25_000), -25_000)
+        self.assertEqual(customer_pass_through_distribution_effect(-25_000), 25_000)
+
     def test_dollar_reserve_is_a_balance_and_uses_selected_percentage(self):
         record = launch("Reserva em Dolares (ultima coluna)", "Receita", 9_823, 0, "Previsto")
 
