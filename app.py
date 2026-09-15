@@ -813,6 +813,7 @@ with tab_balances:
         ws_balances.update("A1", [BALANCE_HEADERS] + edited.fillna("").values.tolist(), value_input_option="USER_ENTERED")
         st.success(f"Saldos atualizados em {now}.")
         st.cache_data.clear()
+        st.rerun()
 
 with tab_history:
     st.subheader("Histórico consolidado mensal")
