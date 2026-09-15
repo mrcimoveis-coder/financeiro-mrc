@@ -153,6 +153,77 @@ def distributable_balance(year_end: float, protected: float, liabilities: float 
     return float(year_end) - float(protected) - float(liabilities)
 
 
+def normalize_works(records: list[dict], default_year: int = 2026) -> pd.DataFrame:
+    """Normalize construction jobs and calculate receivables, payables and profit."""
+    rows = []
+    for sheet_row, record in enumerate(records, start=2):
+        competence = month_start(record.get("Competência"), default_year)
+        charged = parse_money(record.get("Valor Cobrado (R$)"))
+        received = parse_money(record.get("Valor Recebido (R$)"))
+        planned_cost = parse_money(record.get("Custo Previsto (R$)"))
+        paid = parse_money(record.get("Valor Pago (R$)"))
+        raw_status = normalize_label(record.get("Status") or "Em andamento")
+        if raw_status == "cancelada":
+            status = "Cancelada"
+        elif raw_status in {"concluida", "concluido"} or (planned_cost > 0 and paid >= planned_cost):
+            status = "Concluída"
+        elif received > 0 or paid > 0 or raw_status == "parcial":
+            status = "Parcial"
+        else:
+            status = "Em andamento"
+        active = status != "Cancelada"
+        rows.append({
+            "sheet_row": sheet_row,
+            "id": str(record.get("ID") or "").strip(),
+            "competencia": competence,
+            "obra": str(record.get("Obra / Histórico") or "").strip(),
+            "cliente": str(record.get("Locador / Cliente") or "").strip(),
+            "cobrado": charged,
+            "recebido": received,
+            "a_receber": max(charged - received, 0.0) if active else 0.0,
+            "prestador": str(record.get("Prestador") or "").strip(),
+            "pix": str(record.get("PIX do Prestador") or "").strip(),
+            "custo_previsto": planned_cost,
+            "pago": paid,
+            "falta_pagar": max(planned_cost - paid, 0.0) if active else 0.0,
+            "lucro_previsto": charged - planned_cost if active else 0.0,
+            "resultado_caixa": received - paid if active else 0.0,
+            "status": status,
+            "observacao": str(record.get("Observação") or "").strip(),
+        })
+    return pd.DataFrame(rows)
+
+
+def construction_payables(works: pd.DataFrame) -> float:
+    if works.empty or "falta_pagar" not in works:
+        return 0.0
+    return float(works["falta_pagar"].sum())
+
+
+def monthly_work_summary(works: pd.DataFrame, year: int) -> pd.DataFrame:
+    months = pd.DataFrame({"competencia": pd.date_range(f"{year}-01-01", f"{year}-12-01", freq="MS")})
+    months["mes"] = months["competencia"].dt.month.map(MESES)
+    value_columns = [
+        "cobrado", "recebido", "a_receber", "custo_previsto", "pago",
+        "falta_pagar", "lucro_previsto", "resultado_caixa",
+    ]
+    if works.empty:
+        for column in value_columns:
+            months[column] = 0.0
+        return months
+    valid = works[
+        works["competencia"].notna()
+        & (works["competencia"].dt.year == year)
+        & (works["status"] != "Cancelada")
+    ].copy()
+    if valid.empty:
+        for column in value_columns:
+            months[column] = 0.0
+        return months
+    grouped = valid.groupby("competencia", dropna=False)[value_columns].sum().reset_index()
+    return months.merge(grouped, on="competencia", how="left").fillna(0.0)
+
+
 def operational_balance_item(record: dict) -> tuple[str, float] | None:
     """Convert imported point-in-time positions into signed balance items."""
     description = normalize_label(record.get("Histórico"))
@@ -376,3 +447,4 @@ def safe_day(value: int) -> int:
 
 def clean_key(value: str) -> str:
     return re.sub(r"[^a-z0-9_]+", "_", str(value).strip().lower()).strip("_")
+
