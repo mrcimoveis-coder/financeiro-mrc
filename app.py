@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import time
 import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta
@@ -109,6 +110,7 @@ def spreadsheet():
     return gspread.authorize(credentials).open_by_key(SHEET_ID)
 
 
+@st.cache_resource(show_spinner=False)
 def worksheet(name: str, headers: list[str], rows: int = 1000):
     book = spreadsheet()
     try:
@@ -130,6 +132,7 @@ def worksheet(name: str, headers: list[str], rows: int = 1000):
     return ws
 
 
+@st.cache_resource(show_spinner=False)
 def main_sheet():
     ws = spreadsheet().sheet1
     current = ws.row_values(1)
@@ -146,10 +149,15 @@ def main_sheet():
 
 
 def load_records(ws) -> list[dict]:
-    try:
-        return ws.get_all_records(numericise_ignore=["all"])
-    except Exception:
-        return []
+    for attempt in range(4):
+        try:
+            return ws.get_all_records(numericise_ignore=["all"])
+        except gspread.exceptions.APIError as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status != 429 or attempt == 3:
+                raise
+            time.sleep(2 ** attempt)
+    return []
 
 
 def append_dicts(ws, headers: list[str], rows: list[dict]) -> None:
