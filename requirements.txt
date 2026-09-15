@@ -1,5 +1,5 @@
-streamlit
-pandas
-gspread
-google-auth
-plotly
+streamlit>=1.40
+pandas>=2.0
+gspread>=6.0
+google-auth>=2.0
+plotly>=5.0

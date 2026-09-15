@@ -1,616 +1,513 @@
-import streamlit as st
-import pandas as pd
+from __future__ import annotations
+
+import json
+import urllib.parse
+import urllib.request
+from datetime import date, datetime, timedelta
+
 import gspread
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
 from google.oauth2.service_account import Credentials
-import plotly.express as px
-from datetime import datetime
 
-# -----------------------------------------------------------------------------
-# 1. CONFIGURAÇÃO DA PÁGINA E LOGO
-# -----------------------------------------------------------------------------
-st.set_page_config(page_title="Gestão Financeira | MRC Imóveis", page_icon="💰", layout="wide")
+from finance_core import (
+    MESES,
+    format_brl,
+    make_recurrence_rows,
+    monthly_forecast,
+    new_id,
+    normalize_launches,
+    open_launches,
+    parse_money,
+    projection,
+    safe_day,
+    variance,
+)
 
-try:
-    st.image("https://raw.githubusercontent.com/mrcimoveis-coder/portal-intranet/main/logo.jpeg", width=260)
-except Exception:
-    pass
 
-# -----------------------------------------------------------------------------
-# 2. CONEXÃO GOOGLE SHEETS
-# -----------------------------------------------------------------------------
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
+SHEET_ID = "1WaIP5FJpudjKvOXw0pQe7YfJlTPrISAmaBDZswuCsxM"
+MAIN_HEADERS = [
+    "Mês", "Tipo de Operação", "Categoria", "Corretor / Envolvido", "Histórico",
+    "Valor (R$)", "Status", "Observação", "ID", "Competência", "Vencimento",
+    "Valor Previsto (R$)", "Valor Realizado (R$)", "Data Quitação", "Conta",
+    "Natureza", "Série ID", "Criado Em", "Atualizado Em", "Moeda",
+    "Valor na Moeda", "Cotação Utilizada", "Percentual Considerado",
+]
+BALANCE_HEADERS = ["Grupo", "Descrição / Tipo", "Valor (R$)", "Ultima_Atualizacao"]
+PARAM_HEADERS = ["Chave", "Valor", "Descrição", "Atualizado Em"]
+QUOTE_HEADERS = ["Data", "Moeda", "Compra", "Venda", "Fonte", "Consultado Em"]
+CLOSE_HEADERS = [
+    "Competência", "Saldo Bancário", "Receitas Pendentes", "Despesas Pendentes",
+    "Saldo Projetado", "Cauções", "Reserva", "Distribuível", "Fechado Em",
 ]
 
-@st.cache_resource
-def conectar_google_sheets(nome_aba=None):
-    credenciais_dict = dict(st.secrets["gcp_service_account"])
-    if "private_key" in credenciais_dict:
-        credenciais_dict["private_key"] = credenciais_dict["private_key"].replace("\\n", "\n")
-    
-    credentials = Credentials.from_service_account_info(credenciais_dict, scopes=SCOPES)
-    client = gspread.authorize(credentials)
-    spreadsheet = client.open_by_key("1WaIP5FJpudjKvOXw0pQe7YfJlTPrISAmaBDZswuCsxM")
-    
-    if nome_aba:
-        try:
-            return spreadsheet.worksheet(nome_aba)
-        except Exception:
-            return spreadsheet.add_worksheet(title=nome_aba, rows="200", cols="20")
-    return spreadsheet.sheet1
-
-# -----------------------------------------------------------------------------
-# 3. AUTENTICAÇÃO DE ACESSO
-# -----------------------------------------------------------------------------
-USUARIOS = {
-    "admin": "431360#In",
-    "marcelo": "431360Fi",
-    "marcio": "Mpve2804",
-    "pedro.martinez": "431360xxxx",
-    "manoel.iglesias": "431360xxxx",
-    "marcos.junior": "431360xxxxxx"
+DEFAULT_PARAMETERS = {
+    "caucoes_protegidas": (0.0, "Total de cauções que não pode ser distribuído"),
+    "reserva_mrc": (0.0, "Reserva mínima mantida pela MRC"),
+    "percentual_socio_1": (50.0, "Percentual do primeiro sócio"),
+    "percentual_socio_2": (50.0, "Percentual do segundo sócio"),
+    "percentual_usd": (95.0, "Percentual da reserva em dólar considerado no forecast"),
+    "cotacao_manual_usd": (0.0, "Cotação manual; zero utiliza a PTAX de venda"),
 }
 
-if "autenticado_fin" not in st.session_state:
-    st.session_state.autenticado_fin = False
 
-if not st.session_state.autenticado_fin:
-    st.title("🔒 Acesso Restrito — Módulo Financeiro")
-    usuario_input = st.text_input("Usuário:").lower().strip()
-    senha_input = st.text_input("Senha:", type="password")
-    
-    if st.button("Entrar", type="primary"):
-        if usuario_input in USUARIOS and USUARIOS[usuario_input] == senha_input:
+st.set_page_config(page_title="Previsão Financeira | MRC Imóveis", page_icon="💰", layout="wide")
+
+st.markdown(
+    """
+    <style>
+    #MainMenu, footer {visibility:hidden}
+    .block-container {padding-top:1.2rem; max-width:1450px}
+    div[data-testid="stMetric"] {background:#fff; border:1px solid #e5e7eb; border-top:4px solid #c4001a; padding:14px; border-radius:10px}
+    .status-note {padding:.7rem 1rem; border-radius:8px; background:#f7f3fb; border-left:4px solid #8064a2}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+def secret_users() -> dict[str, str]:
+    try:
+        return {str(k).lower().strip(): str(v) for k, v in dict(st.secrets["usuarios_financeiro"]).items()}
+    except Exception:
+        return {}
+
+
+def login() -> None:
+    if st.session_state.get("autenticado_fin"):
+        return
+    users = secret_users()
+    st.title("🔒 Acesso ao módulo financeiro")
+    if not users:
+        st.error("Os usuários do módulo ainda não foram configurados nos segredos do Streamlit.")
+        st.caption("Crie a seção [usuarios_financeiro] nas configurações do aplicativo antes do primeiro acesso.")
+        st.stop()
+    with st.form("login"):
+        user = st.text_input("Usuário").lower().strip()
+        password = st.text_input("Senha", type="password")
+        submit = st.form_submit_button("Entrar", type="primary", use_container_width=True)
+    if submit:
+        if users.get(user) == password:
             st.session_state.autenticado_fin = True
+            st.session_state.usuario_fin = user
             st.rerun()
-        else:
-            st.error("❌ Usuário ou senha incorretos.")
+        st.error("Usuário ou senha incorretos.")
     st.stop()
 
-# -----------------------------------------------------------------------------
-# 4. INTERFACE PRINCIPAL - 5 ABAS
-# -----------------------------------------------------------------------------
-try:
-    sheet = conectar_google_sheets()
-except Exception as e:
-    st.error(f"❌ Erro de conexão com o Google Sheets: {e}")
-    st.stop()
 
-st.title("💰 Painel Financeiro — MRC Imóveis")
-st.write("Controle de receitas, despesas, comissões, projeções e saldos bancários.")
-
-aba_dash, aba_consulta, aba_lancamento, aba_editar, aba_saldos = st.tabs([
-    "📊 Dashboard & Gráficos", 
-    "🔍 Pesquisa & Histórico", 
-    "➕ Novo Lançamento", 
-    "✏️ Editar / Excluir",
-    "🏦 Saldos Bancários & Investimentos"
-])
-
-def tratar_valor_num_inteligente(val):
-    if pd.isna(val) or val is None:
-        return 0.0
-    if isinstance(val, (int, float)):
-        return float(val)
-    
-    val_str = str(val).replace("R$", "").replace(" ", "").strip()
-    if not val_str:
-        return 0.0
-    
-    if "." in val_str and "," in val_str:
-        dot_idx = val_str.rfind(".")
-        comma_idx = val_str.rfind(",")
-        if comma_idx > dot_idx:
-            val_str = val_str.replace(".", "").replace(",", ".")
-        else:
-            val_str = val_str.replace(",", "")
-    elif "," in val_str:
-        val_str = val_str.replace(",", ".")
-            
-    try:
-        return float(val_str)
-    except Exception:
-        return 0.0
-
-# Carregar Dados Principais (Aba 1 do Sheets)
-dados_raw = sheet.get_all_records()
-df = pd.DataFrame(dados_raw) if dados_raw else pd.DataFrame()
-
-col_data = df.columns[0] if not df.empty else "Data"
-
-MONTH_MAP = {
-    "JANEIRO": 1, "FEVEREIRO": 2, "MARÇO": 3, "ABRIL": 4,
-    "MAIO": 5, "JUNHO": 6, "JULHO": 7, "AGOSTO": 8,
-    "SETEMBRO": 9, "OUTUBRO": 10, "NOVEMBRO": 11, "DEZEMBRO": 12
-}
-
-MONTH_NAMES_PT = {
-    1: "JANEIRO", 2: "FEVEREIRO", 3: "MARÇO", 4: "ABRIL",
-    5: "MAIO", 6: "JUNHO", 7: "JULHO", 8: "AGOSTO",
-    9: "SETEMBRO", 10: "OUTUBRO", 11: "NOVEMBRO", 12: "DEZEMBRO"
-}
-
-def extrair_periodo(val):
-    val_str = str(val).strip().upper()
-    if val_str in MONTH_MAP:
-        return pd.Period(year=2026, month=MONTH_MAP[val_str], freq='M')
-    try:
-        dt = pd.to_datetime(val_str, format='%d/%m/%Y', errors='coerce')
-        if pd.notna(dt):
-            return dt.to_period('M')
-    except Exception:
-        pass
-    try:
-        dt = pd.to_datetime(val_str, errors='coerce')
-        if pd.notna(dt):
-            return dt.to_period('M')
-    except Exception:
-        pass
-    return pd.Period(year=2026, month=1, freq='M')
-
-def formatar_rotulo_mes(periodo):
-    m_nome = MONTH_NAMES_PT.get(periodo.month, "OUTRO")
-    return f"{m_nome}/{periodo.year}"
-
-if not df.empty:
-    df["Periodo"] = df[col_data].apply(extrair_periodo)
-    df["Mes_Ano_Label"] = df["Periodo"].apply(formatar_rotulo_mes)
-    
-    if "Valor (R$)" in df.columns:
-        df["Valor_Num"] = df["Valor (R$)"].apply(tratar_valor_num_inteligente)
-    else:
-        df["Valor_Num"] = 0.0
-else:
-    df = pd.DataFrame(columns=[
-        "Data", "Tipo de Operação", "Categoria", "Corretor / Envolvido", "Histórico", "Valor (R$)", "Status", "Observação"
-    ])
-    df["Valor_Num"] = 0.0
-    df["Periodo"] = None
-    df["Mes_Ano_Label"] = None
-
-# Carregar Saldos Bancários de Aba dedicada no Sheets
-sheet_saldos_bancarios = conectar_google_sheets("Saldos_Bancarios")
-raw_saldos_bancarios = sheet_saldos_bancarios.get_all_records()
-
-if not raw_saldos_bancarios:
-    saldos_iniciais = [
-        # Banco do Brasil MRC
-        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Investimento BB (Fundo DI)", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Investimento BB (Poupança)", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Investimento BB (CDB)", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Conta Corrente BB", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Outras Aplicações BB", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco do Brasil MRC", "Descrição / Tipo": "Lançamentos Futuros", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
-        
-        # Banco Inter MRC
-        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Investimento Inter (TPF Selic)", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Investimento Inter (Fundo DI)", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Investimento Inter (CDB)", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Conta Corrente Inter", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Investimento Inter (LCI/LCA)", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Outros Fundos Inter", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Saldo Caixa / Diversos Inter", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
-        {"Grupo": "Banco Inter MRC", "Descrição / Tipo": "Lançamentos Futuros", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
-
-        # Banco do Brasil Torre Forte
-        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Conta Corrente Torre Forte", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
-        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Investimento BB TF (Poupança)", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
-        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Investimento BB TF (Fundo DI)", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
-        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Investimento BB TF (CDB)", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
-        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Aplicações Diversas TF", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
-        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Outras Reservas TF", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
-        {"Grupo": "BB Torre Forte", "Descrição / Tipo": "Lançamentos Futuros", "Valor (R$)": "R$ 0,00", "Ultima_Atualizacao": ""},
+@st.cache_resource
+def spreadsheet():
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
     ]
-    df_saldos_banco = pd.DataFrame(saldos_iniciais)
-else:
-    df_saldos_banco = pd.DataFrame(raw_saldos_bancarios)
+    info = dict(st.secrets["gcp_service_account"])
+    info["private_key"] = info.get("private_key", "").replace("\\n", "\n")
+    credentials = Credentials.from_service_account_info(info, scopes=scopes)
+    return gspread.authorize(credentials).open_by_key(SHEET_ID)
 
-if "Valor (R$)" in df_saldos_banco.columns:
-    df_saldos_banco["Valor_Num"] = df_saldos_banco["Valor (R$)"].apply(tratar_valor_num_inteligente)
-else:
-    df_saldos_banco["Valor_Num"] = 0.0
 
-tot_bb_mrc = df_saldos_banco[df_saldos_banco["Grupo"] == "Banco do Brasil MRC"]["Valor_Num"].sum() if not df_saldos_banco.empty else 0.0
-tot_inter_mrc = df_saldos_banco[df_saldos_banco["Grupo"] == "Banco Inter MRC"]["Valor_Num"].sum() if not df_saldos_banco.empty else 0.0
-tot_bancos_mrc = tot_bb_mrc + tot_inter_mrc
-
-tot_tf = df_saldos_banco[df_saldos_banco["Grupo"] == "BB Torre Forte"]["Valor_Num"].sum() if not df_saldos_banco.empty else 0.0
-tot_geral_bancos = tot_bancos_mrc + tot_tf
-
-data_ultima_att = ""
-if not df_saldos_banco.empty and "Ultima_Atualizacao" in df_saldos_banco.columns:
-    dt_vals = df_saldos_banco["Ultima_Atualizacao"].dropna().astype(str).unique()
-    dt_vals = [v for v in dt_vals if v.strip()]
-    if dt_vals:
-        data_ultima_att = dt_vals[0]
-
-# -----------------------------------------------------------------------------
-# ABA 1: DASHBOARD & GRÁFICOS
-# -----------------------------------------------------------------------------
-with aba_dash:
-    st.subheader("🏦 Resumo de Saldos Bancários & Investimentos")
-    if data_ultima_att:
-        st.caption(f"🕒 **Última atualização dos saldos bancários:** {data_ultima_att}")
+def worksheet(name: str, headers: list[str], rows: int = 1000):
+    book = spreadsheet()
+    try:
+        ws = book.worksheet(name)
+    except gspread.WorksheetNotFound:
+        ws = book.add_worksheet(title=name, rows=rows, cols=max(20, len(headers) + 2))
+    current = ws.row_values(1)
+    if not current:
+        ws.update("A1", [headers])
     else:
-        st.caption("🕒 **Saldos aguardando primeira atualização.**")
-
-    s1, s2, s3, s4 = st.columns(4)
-    s1.metric("Total Banco do Brasil MRC", f"R$ {tot_bb_mrc:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-    s2.metric("Total Banco Inter MRC", f"R$ {tot_inter_mrc:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-    s3.metric("Total Bancos Torre Forte", f"R$ {tot_tf:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-    s4.metric("SALDO TOTAL CONSOLIDADO", f"R$ {tot_geral_bancos:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-
-    st.markdown("---")
-
-    if df.empty:
-        st.info("Nenhum registro cadastrado no financeiro para gerar indicadores operacionais.")
-    else:
-        st.subheader("📊 Indicadores Operacionais")
-        
-        tot_receita = df[df["Tipo de Operação"] == "Receita"]["Valor_Num"].sum() if "Tipo de Operação" in df.columns else 0.0
-        tot_despesa = df[df["Tipo de Operação"] == "Despesa"]["Valor_Num"].sum() if "Tipo de Operação" in df.columns else df["Valor_Num"].sum()
-        saldo = tot_receita - tot_despesa
-        
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total Receitas", f"R$ {tot_receita:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        c2.metric("Total Despesas", f"R$ {tot_despesa:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        c3.metric("Saldo do Período", f"R$ {saldo:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), delta=f"{saldo:,.2f}")
-        
-        st.markdown("---")
-        col_g1, col_g2 = st.columns(2)
-        
-        with col_g1:
-            st.subheader("Despesas por Categoria")
-            df_despesas = df[df["Tipo de Operação"] == "Despesa"] if "Tipo de Operação" in df.columns else df
-            if not df_despesas.empty and "Categoria" in df_despesas.columns:
-                fig_cat = px.pie(df_despesas, names="Categoria", values="Valor_Num", hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
-                st.plotly_chart(fig_cat, use_container_width=True)
-            else:
-                st.info("Sem despesas cadastradas.")
-                
-        with col_g2:
-            st.subheader("Evolução de Receitas e Despesas")
-            if not df.empty:
-                col_cor = "Tipo de Operação" if "Tipo de Operação" in df.columns else None
-                
-                if col_cor:
-                    df_mes = df.groupby(["Periodo", "Mes_Ano_Label", col_cor])["Valor_Num"].sum().reset_index()
-                else:
-                    df_mes = df.groupby(["Periodo", "Mes_Ano_Label"])["Valor_Num"].sum().reset_index()
-                
-                df_mes = df_mes.sort_values("Periodo")
-                ordem_cronologica = df_mes["Mes_Ano_Label"].unique().tolist()
-                
-                fig_mes = px.bar(
-                    df_mes, 
-                    x="Mes_Ano_Label", 
-                    y="Valor_Num", 
-                    color=col_cor, 
-                    barmode="group",
-                    color_discrete_map={"Receita": "#2E7D32", "Despesa": "#C4001A"},
-                    labels={"Mes_Ano_Label": "Mês/Ano", "Valor_Num": "Valor (R$)"}
+        missing = [header for header in headers if header not in current]
+        if missing:
+            ws.update_cell(1, len(current) + 1, missing[0])
+            if len(missing) > 1:
+                ws.update(
+                    range_name=f"{gspread.utils.rowcol_to_a1(1, len(current) + 1)}:{gspread.utils.rowcol_to_a1(1, len(current) + len(missing))}",
+                    values=[missing],
                 )
-                
-                fig_mes.update_xaxes(categoryorder="array", categoryarray=ordem_cronologica)
-                st.plotly_chart(fig_mes, use_container_width=True)
+    return ws
 
-        st.markdown("---")
-        st.subheader("📈 Resultado Líquido Mês a Mês (Receita − Despesa)")
-        
-        all_periods = df[["Periodo", "Mes_Ano_Label"]].drop_duplicates()
-        
-        df_rec_m = df[df["Tipo de Operação"] == "Receita"].groupby(["Periodo", "Mes_Ano_Label"])["Valor_Num"].sum().reset_index().rename(columns={"Valor_Num": "Receita"}) if "Tipo de Operação" in df.columns else pd.DataFrame(columns=["Periodo", "Mes_Ano_Label", "Receita"])
-        df_des_m = df[df["Tipo de Operação"] == "Despesa"].groupby(["Periodo", "Mes_Ano_Label"])["Valor_Num"].sum().reset_index().rename(columns={"Valor_Num": "Despesa"}) if "Tipo de Operação" in df.columns else df.groupby(["Periodo", "Mes_Ano_Label"])["Valor_Num"].sum().reset_index().rename(columns={"Valor_Num": "Despesa"})
-        
-        df_res_m = pd.merge(all_periods, df_rec_m, on=["Periodo", "Mes_Ano_Label"], how="left")
-        df_res_m = pd.merge(df_res_m, df_des_m, on=["Periodo", "Mes_Ano_Label"], how="left").fillna(0.0)
-        df_res_m["Resultado"] = df_res_m["Receita"] - df_res_m["Despesa"]
-        df_res_m["Situação"] = df_res_m["Resultado"].apply(lambda x: "Lucro" if x >= 0 else "Prejuízo")
-        df_res_m = df_res_m.sort_values("Periodo")
-        
-        ordem_res_cronologica = df_res_m["Mes_Ano_Label"].tolist()
-        
-        fig_res = px.bar(
-            df_res_m,
-            x="Mes_Ano_Label",
-            y="Resultado",
-            color="Situação",
-            color_discrete_map={"Lucro": "#2E7D32", "Prejuízo": "#C4001A"},
-            labels={"Mes_Ano_Label": "Mês/Ano", "Resultado": "Resultado Líquido (R$)"},
-            text_auto=".2f"
+
+def main_sheet():
+    ws = spreadsheet().sheet1
+    current = ws.row_values(1)
+    missing = [header for header in MAIN_HEADERS if header not in current]
+    if not current:
+        ws.update("A1", [MAIN_HEADERS])
+    elif missing:
+        start = len(current) + 1
+        ws.update(
+            range_name=f"{gspread.utils.rowcol_to_a1(1, start)}:{gspread.utils.rowcol_to_a1(1, start + len(missing) - 1)}",
+            values=[missing],
         )
-        fig_res.update_xaxes(categoryorder="array", categoryarray=ordem_res_cronologica)
-        st.plotly_chart(fig_res, use_container_width=True)
+    return ws
 
-# -----------------------------------------------------------------------------
-# ABA 2: PESQUISA E HISTÓRICO
-# -----------------------------------------------------------------------------
-with aba_consulta:
-    st.subheader("Filtros Avançados de Pesquisa")
-    if not df.empty:
-        f_col1, f_col2, f_col3 = st.columns(3)
-        with f_col1:
-            meses_opt = ["Todos"] + list(df["Mes_Ano_Label"].dropna().unique())
-            sel_mes = st.selectbox("Mês/Ano:", meses_opt, key="consulta_mes")
-        with f_col2:
-            cats_opt = ["Todas"] + df["Categoria"].dropna().unique().tolist() if "Categoria" in df.columns else ["Todas"]
-            sel_cat = st.selectbox("Categoria / Tipo:", cats_opt, key="consulta_cat")
-        with f_col3:
-            env_opt = ["Todos"] + df["Corretor / Envolvido"].dropna().unique().tolist() if "Corretor / Envolvido" in df.columns else ["Todos"]
-            sel_env = st.selectbox("Corretor / Envolvido:", env_opt, key="consulta_env")
-            
-        busca_kw = st.text_input("🔎 Palavra-chave no Histórico (Ex: Facebook, Cartório, Salário):", key="consulta_kw")
-        
-        df_f = df.copy()
-        if sel_mes != "Todos":
-            df_f = df_f[df_f["Mes_Ano_Label"] == sel_mes]
-        if sel_cat != "Todas" and "Categoria" in df_f.columns:
-            df_f = df_f[df_f["Categoria"] == sel_cat]
-        if sel_env != "Todos" and "Corretor / Envolvido" in df_f.columns:
-            df_f = df_f[df_f["Corretor / Envolvido"] == sel_env]
-        if busca_kw and "Histórico" in df_f.columns:
-            df_f = df_f[df_f["Histórico"].astype(str).str.lower().str.contains(busca_kw.lower())]
-            
-        st.write(f"**Registros encontrados:** {len(df_f)} | **Subtotal:** R$ {df_f['Valor_Num'].sum():,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        
-        cols_desejadas = [col_data, "Tipo de Operação", "Categoria", "Corretor / Envolvido", "Histórico", "Valor (R$)", "Status", "Observação"]
-        cols_existentes = [c for c in cols_desejadas if c in df_f.columns]
-        st.dataframe(df_f[cols_existentes], use_container_width=True, hide_index=True)
 
-# -----------------------------------------------------------------------------
-# ABA 3: NOVO LANÇAMENTO
-# -----------------------------------------------------------------------------
-with aba_lancamento:
-    st.subheader("Registrar Nova Operação Financeira")
-    with st.form("form_financeiro", clear_on_submit=True):
-        c_l1, c_l2 = st.columns(2)
-        with c_l1:
-            data_op = st.date_input("Data da Operação *", value=datetime.today(), format="DD/MM/YYYY")
-            tipo_op = st.radio("Tipo de Operação *", ["Despesa", "Receita"], horizontal=True)
-            
-            categoria = st.selectbox("Categoria / Tipo *", [
-                "SALÁRIO", "COMERCIAL", "DESPESA ADM", "PRÓ-LABORE", "IMPOSTOS", 
-                "GESTÃO - TI", "BANCO", 
-                "RECEITA ALUGUEL", "RECEITA VENDA", 
-                "Renda de Seguro Incendio", "Renda de DVDB", 
-                "Renda de Juros de aplicação", "Renda Loft - Comissão", 
-                "Venda Imovel MRC", "Venda Imovel Torre Forte", 
-                "OUTRO"
-            ])
-            envolvido = st.text_input("Corretor / Envolvido", placeholder="Ex: PEDRO, CAIXINHA, MANOEL, MARCOS JR...")
-        with c_l2:
-            historico = st.text_input("Histórico / Descrição *", placeholder="Ex: Cartão de Crédito, Imposto Mensal, Comissão...")
-            valor = st.number_input("Valor (R$) *", min_value=0.0, format="%.2f")
-            status = st.selectbox("Status", ["confirmado", "pendente"])
-            obs = st.text_area("Observações Adicionais")
-            
-        btn_salvar = st.form_submit_button("💾 Salvar Registro", type="primary")
-        
-        if btn_salvar:
-            if valor <= 0 or not historico:
-                st.error("⚠️ Preencha o histórico e um valor maior que R$ 0,00.")
-            else:
-                try:
-                    data_str = data_op.strftime("%d/%m/%Y")
-                    valor_fmt = f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                    nova_linha = [data_str, tipo_op, categoria, envolvido, historico, valor_fmt, status, obs]
-                    sheet.append_row(nova_linha)
-                    st.success("✅ Registro financeiro adicionado com sucesso!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Erro ao salvar: {e}")
+def load_records(ws) -> list[dict]:
+    try:
+        return ws.get_all_records(numericise_ignore=["all"])
+    except Exception:
+        return []
 
-# -----------------------------------------------------------------------------
-# ABA 4: EDITAR E EXCLUIR
-# -----------------------------------------------------------------------------
-with aba_editar:
-    st.subheader("Alterar ou Excluir Registro Financeiro")
-    
-    if "item_para_editar" not in st.session_state:
-        st.session_state.item_para_editar = None
 
-    if df.empty:
-        st.info("Nenhum lançamento cadastrado para editar ou excluir.")
-    else:
-        st.markdown("##### 🔍 Filtros de Pesquisa para Localizar o Lançamento")
-        fe_col1, fe_col2, fe_col3 = st.columns(3)
-        with fe_col1:
-            meses_opt_ed = ["Todos"] + list(df["Mes_Ano_Label"].dropna().unique())
-            sel_mes_ed = st.selectbox("Mês/Ano:", meses_opt_ed, key="edit_mes")
-        with fe_col2:
-            cats_opt_ed = ["Todas"] + df["Categoria"].dropna().unique().tolist() if "Categoria" in df.columns else ["Todas"]
-            sel_cat_ed = st.selectbox("Categoria / Tipo:", cats_opt_ed, key="edit_cat")
-        with fe_col3:
-            env_opt_ed = ["Todos"] + df["Corretor / Envolvido"].dropna().unique().tolist() if "Corretor / Envolvido" in df.columns else ["Todos"]
-            sel_env_ed = st.selectbox("Corretor / Envolvido:", env_opt_ed, key="edit_env")
-            
-        busca_kw_ed = st.text_input("🔎 Palavra-chave no Histórico (Ex: Facebook, Cartório, Salário):", key="edit_kw")
-        
-        df_edit = df.copy()
-        if sel_mes_ed != "Todos":
-            df_edit = df_edit[df_edit["Mes_Ano_Label"] == sel_mes_ed]
-        if sel_cat_ed != "Todas" and "Categoria" in df_edit.columns:
-            df_edit = df_edit[df_edit["Categoria"] == sel_cat_ed]
-        if sel_env_ed != "Todos" and "Corretor / Envolvido" in df_edit.columns:
-            df_edit = df_edit[df_edit["Corretor / Envolvido"] == sel_env_ed]
-        if busca_kw_ed and "Histórico" in df_edit.columns:
-            df_edit = df_edit[df_edit["Histórico"].astype(str).str.lower().str.contains(busca_kw_ed.lower())]
-            
-        st.write(f"**Registros encontrados:** {len(df_edit)} | **Subtotal:** R$ {df_edit['Valor_Num'].sum():,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        st.markdown("---")
+def append_dicts(ws, headers: list[str], rows: list[dict]) -> None:
+    if not rows:
+        return
+    ws.append_rows([[row.get(header, "") for header in headers] for row in rows], value_input_option="USER_ENTERED")
 
-        if df_edit.empty:
-            st.warning("⚠️ Nenhum lançamento encontrado com os filtros selecionados.")
-        else:
-            st.markdown("##### 📋 Clique no botão ✏️ Editar do lançamento que deseja alterar ou apagar:")
-            
-            h_c1, h_c2, h_c3, h_c4, h_c5, h_c6, h_c7 = st.columns([1.1, 0.9, 1.2, 1.2, 2.2, 1.2, 0.9])
-            h_c1.markdown("**Data**")
-            h_c2.markdown("**Tipo**")
-            h_c3.markdown("**Categoria**")
-            h_c4.markdown("**Envolvido**")
-            h_c5.markdown("**Histórico**")
-            h_c6.markdown("**Valor**")
-            h_c7.markdown("**Ação**")
-            st.markdown("---")
 
-            for idx_df, row in df_edit.iterrows():
-                r_c1, r_c2, r_c3, r_c4, r_c5, r_c6, r_c7 = st.columns([1.1, 0.9, 1.2, 1.2, 2.2, 1.2, 0.9])
-                
-                r_c1.write(str(row.get(col_data, "")))
-                r_c2.write(str(row.get("Tipo de Operação", "")))
-                r_c3.write(str(row.get("Categoria", "")))
-                r_c4.write(str(row.get("Corretor / Envolvido", "")))
-                r_c5.write(str(row.get("Histórico", "")))
-                r_c6.write(str(row.get("Valor (R$)", "")))
-                
-                if r_c7.button("✏️ Editar", key=f"btn_edit_{idx_df}"):
-                    st.session_state.item_para_editar = idx_df
-                    st.rerun()
-
-        if st.session_state.item_para_editar is not None:
-            idx = st.session_state.item_para_editar
-            if idx in df.index:
-                linha_real = idx + 2
-                dados_item = df.iloc[idx]
-                
-                st.markdown("---")
-                c_head1, c_head2 = st.columns([4, 1])
-                c_head1.markdown(f"### ✏️ Editando Registro #{idx + 1}: *{dados_item.get('Histórico', '')}* ({dados_item.get('Valor (R$)', '')})")
-                if c_head2.button("❌ Fechar Edição"):
-                    st.session_state.item_para_editar = None
-                    st.rerun()
-                
-                with st.form("form_editar_financeiro"):
-                    col_ed1, col_ed2 = st.columns(2)
-                    with col_ed1:
-                        nov_data = st.text_input("Data / Mês *", value=str(dados_item.get(col_data, "")))
-                        tp_atual = str(dados_item.get("Tipo de Operação", "Despesa")).strip()
-                        nov_tipo = st.selectbox("Tipo de Operação *", ["Despesa", "Receita"], index=0 if tp_atual.lower() == "despesa" else 1)
-                        
-                        cats_lista = [
-                            "SALÁRIO", "COMERCIAL", "DESPESA ADM", "PRÓ-LABORE", "IMPOSTOS", 
-                            "GESTÃO - TI", "BANCO", 
-                            "RECEITA ALUGUEL", "RECEITA VENDA", 
-                            "Renda de Seguro Incendio", "Renda de DVDB", 
-                            "Renda de Juros de aplicação", "Renda Loft - Comissão", 
-                            "Venda Imovel MRC", "Venda Imovel Torre Forte", 
-                            "OUTRO"
-                        ]
-                        cat_atual = str(dados_item.get("Categoria", "")).strip()
-                        idx_cat = cats_lista.index(cat_atual) if cat_atual in cats_lista else len(cats_lista) - 1
-                        nov_cat = st.selectbox("Categoria / Tipo *", cats_lista, index=idx_cat)
-                        nov_env = st.text_input("Corretor / Envolvido", value=str(dados_item.get("Corretor / Envolvido", "")))
-                    
-                    with col_ed2:
-                        nov_hist = st.text_input("Histórico / Descrição *", value=str(dados_item.get("Histórico", "")))
-                        nov_val = st.text_input("Valor (R$) *", value=str(dados_item.get("Valor (R$)", "")))
-                        st_atual = str(dados_item.get("Status", "")).strip().lower()
-                        idx_st = 0 if st_atual == "confirmado" else 1
-                        nov_status = st.selectbox("Status", ["confirmado", "pendente"], index=idx_st)
-                        nov_obs = st.text_area("Observações", value=str(dados_item.get("Observação", "")))
-                        
-                    btn_atualizar = st.form_submit_button("🔄 Salvar Alterações", type="primary")
-                    
-                    if btn_atualizar:
-                        try:
-                            v_edit_num = tratar_valor_num_inteligente(nov_val)
-                            v_edit_fmt = f"R$ {v_edit_num:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                            
-                            sheet.update_cell(linha_real, 1, nov_data)
-                            sheet.update_cell(linha_real, 2, nov_tipo)
-                            sheet.update_cell(linha_real, 3, nov_cat)
-                            sheet.update_cell(linha_real, 4, nov_env)
-                            sheet.update_cell(linha_real, 5, nov_hist)
-                            sheet.update_cell(linha_real, 6, v_edit_fmt)
-                            sheet.update_cell(linha_real, 7, nov_status)
-                            sheet.update_cell(linha_real, 8, nov_obs)
-                            
-                            st.success("✅ Lançamento financeiro atualizado com sucesso!")
-                            st.session_state.item_para_editar = None
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Erro ao atualizar lançamento: {e}")
-                
-                st.markdown("---")
-                st.markdown("### ❌ Excluir Lançamento")
-                confirmar = st.checkbox("Confirmo que desejo apagar permanentemente este lançamento.")
-                if confirmar:
-                    if st.button("🗑️ Apagar Lançamento Definitivamente", type="primary"):
-                        try:
-                            try:
-                                sheet.delete_rows(linha_real)
-                            except AttributeError:
-                                sheet.delete_row(linha_real)
-                                
-                            st.success("✅ Lançamento excluído com sucesso!")
-                            st.session_state.item_para_editar = None
-                            st.cache_data.clear()
-                            st.cache_resource.clear()
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Erro ao excluir lançamento: {e}")
-
-# -----------------------------------------------------------------------------
-# ABA 5: SALDOS BANCÁRIOS & INVESTIMENTOS (ENTRADA LIVRE DE TEXTO COM SUPORTE A VÍRGULA E PONTO)
-# -----------------------------------------------------------------------------
-with aba_saldos:
-    st.subheader("🏦 Controle de Saldos Bancários & Investimentos")
-    st.caption("💡 **Formato dos valores:** Você pode digitar usando vírgula ou ponto (ex: `38.306,36` ou `38306,36`). Para débitos/lançamentos futuros a abater, use o sinal negativo `-` (ex: `-1500,00`).")
-
-    if data_ultima_att:
-        st.info(f"🕒 **Última atualização realizada em:** {data_ultima_att}")
-    else:
-        st.warning("⚠️ **Atenção:** Os saldos ainda não foram salvos no sistema. Atualize os valores abaixo e clique em Salvar.")
-
-    cols_ed = ["Grupo", "Descrição / Tipo", "Valor (R$)"]
-    df_saldos_view = df_saldos_banco[cols_ed].copy() if not df_saldos_banco.empty and all(c in df_saldos_banco.columns for c in cols_ed) else pd.DataFrame(columns=cols_ed)
-
-    # Formatar visualmente os valores em texto padronizado para edição
-    df_saldos_view["Valor (R$)"] = df_saldos_view["Valor (R$)"].apply(
-        lambda v: f"R$ {tratar_valor_num_inteligente(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+def update_row(ws, row_number: int, updates: dict) -> None:
+    headers = ws.row_values(1)
+    values = ws.row_values(row_number)
+    values += [""] * (len(headers) - len(values))
+    for key, value in updates.items():
+        if key in headers:
+            values[headers.index(key)] = value
+    ws.update(
+        range_name=f"A{row_number}:{gspread.utils.rowcol_to_a1(row_number, len(headers))}",
+        values=[values],
+        value_input_option="USER_ENTERED",
     )
 
-    df_saldos_editado = st.data_editor(
-        df_saldos_view,
-        use_container_width=True,
-        num_rows="dynamic",
-        column_config={
-            "Grupo": st.column_config.SelectboxColumn("Grupo / Conta", options=["Banco do Brasil MRC", "Banco Inter MRC", "BB Torre Forte"], required=True),
-            "Descrição / Tipo": st.column_config.TextColumn("Descrição / Tipo de Aplicação", required=True),
-            "Valor (R$)": st.column_config.TextColumn("Valor Atual (R$)", help="Ex: 38.306,36 ou -1.500,00", required=True)
-        }
-    )
 
-    if st.button("💾 Salvar Saldos Bancários e Atualizar Data/Hora", type="primary"):
+@st.cache_data(ttl=1800, show_spinner=False)
+def ptax_sale(reference: date) -> tuple[float, date] | tuple[None, None]:
+    for offset in range(0, 10):
+        candidate = reference - timedelta(days=offset)
+        formatted = candidate.strftime("%m-%d-%Y")
+        endpoint = (
+            "https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/"
+            "CotacaoDolarDia(dataCotacao=@dataCotacao)?"
+            + urllib.parse.urlencode({"@dataCotacao": f"'{formatted}'", "$format": "json"})
+        )
         try:
-            agora_str = datetime.now().strftime("%d/%m/%Y às %H:%M")
-            df_salvar = df_saldos_editado.copy()
-            
-            # Formatar cada valor numericamente e padronizar como moeda
-            df_salvar["Valor (R$)"] = df_salvar["Valor (R$)"].apply(
-                lambda v: f"R$ {tratar_valor_num_inteligente(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            with urllib.request.urlopen(endpoint, timeout=8) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            values = payload.get("value", [])
+            if values:
+                return float(values[-1]["cotacaoVenda"]), candidate
+        except Exception:
+            continue
+    return None, None
+
+
+def load_parameters(ws) -> dict[str, float]:
+    records = load_records(ws)
+    existing = {str(item.get("Chave", "")): parse_money(item.get("Valor")) for item in records}
+    missing_rows = []
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+    for key, (value, description) in DEFAULT_PARAMETERS.items():
+        if key not in existing:
+            existing[key] = value
+            missing_rows.append({"Chave": key, "Valor": value, "Descrição": description, "Atualizado Em": now})
+    append_dicts(ws, PARAM_HEADERS, missing_rows)
+    return existing
+
+
+def save_parameters(ws, values: dict[str, float]) -> None:
+    records = load_records(ws)
+    rows_by_key = {str(item.get("Chave", "")): index for index, item in enumerate(records, start=2)}
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+    new_rows = []
+    for key, value in values.items():
+        description = DEFAULT_PARAMETERS.get(key, (0, key))[1]
+        if key in rows_by_key:
+            update_row(ws, rows_by_key[key], {"Valor": value, "Descrição": description, "Atualizado Em": now})
+        else:
+            new_rows.append({"Chave": key, "Valor": value, "Descrição": description, "Atualizado Em": now})
+    append_dicts(ws, PARAM_HEADERS, new_rows)
+
+
+def account_balances(ws) -> tuple[pd.DataFrame, float]:
+    records = load_records(ws)
+    frame = pd.DataFrame(records)
+    if frame.empty:
+        frame = pd.DataFrame(columns=BALANCE_HEADERS)
+    for column in BALANCE_HEADERS:
+        if column not in frame:
+            frame[column] = ""
+    frame["Valor Num"] = frame["Valor (R$)"].map(parse_money)
+    return frame, float(frame["Valor Num"].sum())
+
+
+def display_money_table(frame: pd.DataFrame, columns: list[str]) -> None:
+    view = frame.copy()
+    for column in columns:
+        if column in view:
+            view[column] = view[column].map(format_brl)
+    st.dataframe(view, use_container_width=True, hide_index=True)
+
+
+login()
+
+try:
+    ws_main = main_sheet()
+    ws_balances = worksheet("Saldos_Bancarios", BALANCE_HEADERS, 100)
+    ws_parameters = worksheet("Parametros", PARAM_HEADERS, 100)
+    ws_quotes = worksheet("Cotacoes", QUOTE_HEADERS, 500)
+    ws_closings = worksheet("Fechamentos", CLOSE_HEADERS, 500)
+    ws_recurrences = worksheet(
+        "Recorrencias",
+        ["Série ID", "Descrição", "Tipo", "Categoria", "Início", "Ocorrências", "Intervalo em meses", "Valor", "Criado Em"],
+        500,
+    )
+except Exception as exc:
+    st.error(f"Não foi possível abrir a base Financeiro_MRC: {exc}")
+    st.stop()
+
+records = load_records(ws_main)
+launches = normalize_launches(records)
+balances_df, bank_balance = account_balances(ws_balances)
+parameters = load_parameters(ws_parameters)
+today = date.today()
+
+with st.sidebar:
+    st.image("https://raw.githubusercontent.com/mrcimoveis-coder/portal-intranet/main/logo.jpeg", width=220)
+    st.caption(f"Usuário: {st.session_state.get('usuario_fin', '')}")
+    available_years = sorted(
+        {today.year, 2026, *([int(y) for y in launches["competencia"].dropna().dt.year.unique()] if not launches.empty else [])}
+    )
+    selected_year = st.selectbox("Ano do forecast", available_years, index=available_years.index(today.year) if today.year in available_years else 0)
+    if st.button("Sair"):
+        st.session_state.autenticado_fin = False
+        st.rerun()
+
+st.title("💰 Previsão financeira — MRC Imóveis")
+st.caption("O saldo bancário representa o que já aconteceu. Somente receitas e despesas ainda abertas alteram a projeção futura.")
+
+tab_summary, tab_pending, tab_launch, tab_forecast, tab_balances, tab_history, tab_settings = st.tabs(
+    ["Resumo", "Pendências", "Novo lançamento", "Forecast", "Saldos", "Histórico", "Configurações"]
+)
+
+monthly = monthly_forecast(launches, selected_year)
+projected = projection(monthly, bank_balance, today)
+open_df = open_launches(launches)
+future_open = open_df[open_df["competencia"] >= pd.Timestamp(today.year, today.month, 1)] if not open_df.empty else open_df
+pending_income = float(future_open.loc[future_open["tipo"] == "Receita", "previsto"].sum()) if not future_open.empty else 0.0
+pending_expense = float(future_open.loc[future_open["tipo"] == "Despesa", "previsto"].sum()) if not future_open.empty else 0.0
+year_end = float(projected.iloc[-1]["saldo_projetado"]) if not projected.empty else bank_balance
+protected = parameters["caucoes_protegidas"] + parameters["reserva_mrc"]
+distributable = year_end - protected
+
+with tab_summary:
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Saldos atualizados", format_brl(bank_balance))
+    c2.metric("Receitas pendentes", format_brl(pending_income))
+    c3.metric("Despesas pendentes", format_brl(pending_expense))
+    c4.metric("Sobra / falta projetada", format_brl(distributable))
+
+    st.markdown('<div class="status-note">Ao quitar um lançamento, ele deixa de afetar a projeção. O valor realizado fica apenas no histórico, pois o débito ou crédito já estará refletido no saldo bancário atualizado.</div>', unsafe_allow_html=True)
+    st.subheader(f"Projeção mensal de {selected_year}")
+    fig = go.Figure()
+    fig.add_bar(x=projected["mes"], y=projected["receitas"], name="Receitas pendentes", marker_color="#2e7d32")
+    fig.add_bar(x=projected["mes"], y=projected["despesas"], name="Despesas pendentes", marker_color="#c4001a")
+    fig.add_scatter(x=projected["mes"], y=projected["saldo_projetado"], name="Saldo projetado", mode="lines+markers", line={"color": "#8064a2", "width": 3}, yaxis="y2")
+    fig.update_layout(
+        barmode="group", height=460, legend={"orientation": "h"}, margin={"l": 20, "r": 20, "t": 20, "b": 20},
+        yaxis={"title": "Movimentação"}, yaxis2={"title": "Saldo", "overlaying": "y", "side": "right"},
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    view = projected[["mes", "receitas", "despesas", "resultado", "saldo_projetado"]].rename(
+        columns={"mes": "Mês", "receitas": "Receitas", "despesas": "Despesas", "resultado": "Resultado", "saldo_projetado": "Saldo projetado"}
+    )
+    display_money_table(view, ["Receitas", "Despesas", "Resultado", "Saldo projetado"])
+
+with tab_pending:
+    st.subheader("Receitas e despesas ainda abertas")
+    if open_df.empty:
+        st.success("Não há lançamentos pendentes.")
+    else:
+        f1, f2, f3 = st.columns(3)
+        month_filter = f1.selectbox("Mês", ["Todos"] + list(MESES.values()), key="pending_month")
+        type_filter = f2.selectbox("Tipo", ["Todos", "Receita", "Despesa"], key="pending_type")
+        status_filter = f3.selectbox("Situação", ["Todos", "Pendente", "Previsto", "Atrasado", "Parcial"], key="pending_status")
+        filtered = open_df[open_df["competencia"].dt.year == selected_year].copy()
+        if month_filter != "Todos":
+            filtered = filtered[filtered["competencia"].dt.month == list(MESES.values()).index(month_filter) + 1]
+        if type_filter != "Todos":
+            filtered = filtered[filtered["tipo"] == type_filter]
+        if status_filter != "Todos":
+            filtered = filtered[filtered["status"] == status_filter]
+        if filtered.empty:
+            st.info("Nenhum lançamento encontrado com esses filtros.")
+        else:
+            labels = {
+                index: f"{row['vencimento'].strftime('%d/%m/%Y') if pd.notna(row['vencimento']) else 'sem data'} · {row['tipo']} · {row['historico']} · {format_brl(row['previsto'])}"
+                for index, row in filtered.iterrows()
+            }
+            chosen = st.selectbox("Selecione um lançamento", labels.keys(), format_func=lambda item: labels[item])
+            item = filtered.loc[chosen]
+            st.write(f"**Categoria:** {item['categoria']}  |  **Situação:** {item['status']}  |  **Conta:** {item['conta'] or 'não informada'}")
+            with st.form("settle_form"):
+                actual = st.number_input("Valor efetivamente pago ou recebido", min_value=0.0, value=float(item["previsto"]), step=10.0)
+                settled_date = st.date_input("Data da quitação", value=today, format="DD/MM/YYYY")
+                account = st.text_input("Conta utilizada", value=item["conta"])
+                observation = st.text_area("Observação", value=item["observacao"])
+                update_balance_now = st.checkbox("Também atualizarei os saldos bancários nesta mesma sessão")
+                settle = st.form_submit_button("Marcar como quitado", type="primary")
+            if settle:
+                update_row(
+                    ws_main,
+                    int(item["sheet_row"]),
+                    {
+                        "Status": "Quitado",
+                        "Valor Realizado (R$)": format_brl(actual),
+                        "Data Quitação": settled_date.strftime("%d/%m/%Y"),
+                        "Conta": account,
+                        "Observação": observation,
+                        "Atualizado Em": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                    },
+                )
+                difference = actual - float(item["previsto"])
+                st.success(f"Quitação registrada. Diferença sobre o previsto: {format_brl(difference)}.")
+                if not update_balance_now:
+                    st.warning("Atualize o saldo da conta para que o painel reflita o pagamento real.")
+                st.cache_data.clear()
+
+with tab_launch:
+    st.subheader("Cadastrar receita ou despesa")
+    with st.form("new_launch", clear_on_submit=True):
+        a, b, c = st.columns(3)
+        launch_type = a.radio("Tipo", ["Despesa", "Receita"], horizontal=True)
+        description = b.text_input("Descrição")
+        category = c.text_input("Categoria", value="OUTRO")
+        d, e, f = st.columns(3)
+        due = d.date_input("Vencimento", value=today, format="DD/MM/YYYY")
+        currency = e.selectbox("Moeda", ["BRL", "USD"])
+        amount = f.number_input("Valor previsto", min_value=0.0, step=100.0)
+        g, h, i = st.columns(3)
+        nature = g.selectbox("Natureza", ["Operacional", "Empréstimo a receber", "Investimento", "Reserva", "Retirada de sócios", "Outro"])
+        involved = h.text_input("Envolvido")
+        account = i.text_input("Conta")
+        notes = st.text_area("Observações")
+        submit_launch = st.form_submit_button("Salvar lançamento", type="primary")
+    if submit_launch:
+        if not description or amount <= 0:
+            st.error("Informe a descrição e um valor maior que zero.")
+        else:
+            quote, quote_date = ptax_sale(today)
+            percent = parameters["percentual_usd"]
+            manual_quote = parameters["cotacao_manual_usd"]
+            used_quote = manual_quote or quote or 0.0
+            planned_brl = amount if currency == "BRL" else amount * used_quote * percent / 100.0
+            now = datetime.now().strftime("%d/%m/%Y %H:%M")
+            row = {
+                "Mês": MESES[due.month], "Tipo de Operação": launch_type, "Categoria": category,
+                "Corretor / Envolvido": involved, "Histórico": description, "Valor (R$)": format_brl(planned_brl),
+                "Status": "Pendente", "Observação": notes, "ID": new_id(), "Competência": due.strftime("%m/%Y"),
+                "Vencimento": due.strftime("%d/%m/%Y"), "Valor Previsto (R$)": format_brl(planned_brl),
+                "Valor Realizado (R$)": "", "Data Quitação": "", "Conta": account, "Natureza": nature,
+                "Série ID": "", "Criado Em": now, "Atualizado Em": now, "Moeda": currency,
+                "Valor na Moeda": amount if currency == "USD" else "", "Cotação Utilizada": used_quote if currency == "USD" else "",
+                "Percentual Considerado": percent if currency == "USD" else 100,
+            }
+            append_dicts(ws_main, MAIN_HEADERS, [row])
+            if currency == "USD" and quote:
+                append_dicts(ws_quotes, QUOTE_HEADERS, [{"Data": quote_date.strftime("%d/%m/%Y"), "Moeda": "USD", "Compra": "", "Venda": quote, "Fonte": "BCB PTAX", "Consultado Em": now}])
+            st.success("Lançamento salvo.")
+
+with tab_forecast:
+    st.subheader("Programar lançamentos futuros")
+    st.caption("Crie uma série mensal, trimestral, semestral ou anual. Cada ocorrência poderá ser quitada ou alterada individualmente.")
+    with st.form("forecast_form", clear_on_submit=True):
+        a, b, c = st.columns(3)
+        description = a.text_input("Nome do lançamento")
+        launch_type = b.selectbox("Tipo", ["Despesa", "Receita"])
+        category = c.text_input("Categoria", value="OUTRO")
+        d, e, f = st.columns(3)
+        planned_value = d.number_input("Valor por ocorrência", min_value=0.0, step=100.0)
+        start = e.date_input("Primeiro vencimento", value=date(selected_year, 1, 1), format="DD/MM/YYYY")
+        frequency = f.selectbox("Periodicidade", {"Mensal": 1, "Trimestral": 3, "Semestral": 6, "Anual": 12}.keys())
+        g, h, i = st.columns(3)
+        occurrences = g.number_input("Quantidade de ocorrências", min_value=1, max_value=120, value=12, step=1)
+        due_day = h.number_input("Dia do vencimento", min_value=1, max_value=31, value=start.day, step=1)
+        nature = i.selectbox("Natureza", ["Operacional", "Empréstimo a receber", "Investimento", "Reserva", "Retirada de sócios", "Outro"], key="forecast_nature")
+        j, k = st.columns(2)
+        involved = j.text_input("Envolvido")
+        account = k.text_input("Conta")
+        notes = st.text_area("Observações da série")
+        create_series = st.form_submit_button("Criar forecast", type="primary")
+    if create_series:
+        if not description or planned_value <= 0:
+            st.error("Informe o nome e um valor maior que zero.")
+        else:
+            intervals = {"Mensal": 1, "Trimestral": 3, "Semestral": 6, "Anual": 12}
+            series_id, series_rows = make_recurrence_rows(
+                description=description, launch_type=launch_type, category=category, involved=involved,
+                planned_value=planned_value, start_date=start, occurrences=int(occurrences),
+                interval_months=intervals[frequency], due_day=safe_day(due_day), account=account,
+                nature=nature, notes=notes,
             )
-            df_salvar["Ultima_Atualizacao"] = agora_str
-            
-            sheet_saldos_bancarios.clear()
-            sheet_saldos_bancarios.append_row(list(df_salvar.columns))
-            rows_save = df_salvar.fillna(0).values.tolist()
-            for r_s in rows_save:
-                sheet_saldos_bancarios.append_row(r_s)
-                
-            st.success(f"✅ Saldos bancários salvos com sucesso em **{agora_str}**!")
-            st.cache_data.clear()
-            st.cache_resource.clear()
-            st.rerun()
-        except Exception as e_sb:
-            st.error(f"Erro ao salvar saldos bancários: {e_sb}")
+            append_dicts(ws_main, MAIN_HEADERS, series_rows)
+            append_dicts(ws_recurrences, ws_recurrences.row_values(1), [{
+                "Série ID": series_id, "Descrição": description, "Tipo": launch_type, "Categoria": category,
+                "Início": start.strftime("%d/%m/%Y"), "Ocorrências": int(occurrences),
+                "Intervalo em meses": intervals[frequency], "Valor": format_brl(planned_value),
+                "Criado Em": datetime.now().strftime("%d/%m/%Y %H:%M"),
+            }])
+            st.success(f"Forecast criado com {int(occurrences)} ocorrências.")
+
+with tab_balances:
+    st.subheader("Saldos bancários e investimentos")
+    st.caption("Informe o saldo real atual. Não desconte novamente os lançamentos já quitados: eles já estão refletidos nesses saldos.")
+    edit = balances_df[BALANCE_HEADERS].copy()
+    edited = st.data_editor(edit, use_container_width=True, hide_index=True, num_rows="dynamic")
+    if st.button("Salvar todos os saldos", type="primary"):
+        now = datetime.now().strftime("%d/%m/%Y às %H:%M")
+        edited["Ultima_Atualizacao"] = now
+        ws_balances.clear()
+        ws_balances.update("A1", [BALANCE_HEADERS] + edited.fillna("").values.tolist(), value_input_option="USER_ENTERED")
+        st.success(f"Saldos atualizados em {now}.")
+        st.cache_data.clear()
+
+with tab_history:
+    st.subheader("Histórico e diferenças")
+    history = variance(launches)
+    if history.empty:
+        st.info("Ainda não existem quitações com valor realizado.")
+    else:
+        history = history[history["competencia"].dt.year == selected_year].copy()
+        view = history[["competencia", "tipo", "categoria", "historico", "previsto", "realizado", "variacao", "conta"]]
+        display_money_table(view, ["previsto", "realizado", "variacao"])
+        if not history.empty:
+            summary = history.groupby("historico", dropna=False).agg(previsto=("previsto", "sum"), realizado=("realizado", "sum"), variacao=("variacao", "sum")).reset_index()
+            st.subheader("Diferenças acumuladas por lançamento")
+            display_money_table(summary.sort_values("variacao", key=lambda s: s.abs(), ascending=False), ["previsto", "realizado", "variacao"])
+
+with tab_settings:
+    st.subheader("Reservas, distribuição e dólar")
+    quote, quote_date = ptax_sale(today)
+    if quote:
+        st.info(f"PTAX de venda disponível: R$ {quote:.4f} em {quote_date.strftime('%d/%m/%Y')}.")
+    else:
+        st.warning("Não foi possível consultar a PTAX agora. A cotação manual poderá ser usada.")
+    with st.form("parameters_form"):
+        a, b = st.columns(2)
+        caution = a.number_input("Cauções protegidas", min_value=0.0, value=float(parameters["caucoes_protegidas"]), step=1000.0)
+        reserve = b.number_input("Reserva MRC", min_value=0.0, value=float(parameters["reserva_mrc"]), step=1000.0)
+        c, d = st.columns(2)
+        partner1 = c.number_input("Percentual sócio 1", min_value=0.0, max_value=100.0, value=float(parameters["percentual_socio_1"]), step=1.0)
+        partner2 = d.number_input("Percentual sócio 2", min_value=0.0, max_value=100.0, value=float(parameters["percentual_socio_2"]), step=1.0)
+        e, f = st.columns(2)
+        usd_percent = e.number_input("Percentual considerado para USD", min_value=0.0, max_value=100.0, value=float(parameters["percentual_usd"]), step=1.0)
+        usd_manual = f.number_input("Cotação manual do dólar (zero = PTAX)", min_value=0.0, value=float(parameters["cotacao_manual_usd"]), step=0.01, format="%.4f")
+        save = st.form_submit_button("Salvar configurações", type="primary")
+    if save:
+        if abs(partner1 + partner2 - 100.0) > 0.01:
+            st.error("Os percentuais dos dois sócios devem totalizar 100%.")
+        else:
+            save_parameters(ws_parameters, {
+                "caucoes_protegidas": caution, "reserva_mrc": reserve,
+                "percentual_socio_1": partner1, "percentual_socio_2": partner2,
+                "percentual_usd": usd_percent, "cotacao_manual_usd": usd_manual,
+            })
+            st.success("Configurações salvas.")
 
     st.markdown("---")
-    st.subheader("📊 Resumo Consolidado dos Saldos Bancários")
-
-    c_sb1, c_sb2, c_sb3 = st.columns(3)
-    c_sb1.metric("SALDO TOTAL BANCOS MRC", f"R$ {tot_bancos_mrc:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-    c_sb2.metric("SALDO TOTAL BANCOS TORRE FORTE", f"R$ {tot_tf:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-    c_sb3.metric("SALDOS TOTAIS CONSOLIDADOS", f"R$ {tot_geral_bancos:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    st.write("**Distribuição estimada no final do ano**")
+    d1, d2, d3 = st.columns(3)
+    d1.metric("Total distribuível", format_brl(distributable))
+    d2.metric("Sócio 1", format_brl(max(distributable, 0) * parameters["percentual_socio_1"] / 100))
+    d3.metric("Sócio 2", format_brl(max(distributable, 0) * parameters["percentual_socio_2"] / 100))
