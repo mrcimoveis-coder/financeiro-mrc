@@ -11,6 +11,9 @@ Aplicativo Streamlit integrado ao Google Sheets `Financeiro_MRC`.
 - Posições variáveis, como empréstimos e acertos de obras pendentes, são tratadas como saldos e não como novas receitas recorrentes.
 - O Superlógica representa repasses a clientes: saldo positivo reduz a distribuição e saldo negativo aumenta a distribuição.
 - Acertos de obras pendentes e boletos pagos adiantados seguem a mesma regra: valores positivos reduzem a distribuição.
+- A aba Obras controla valor cobrado, recebimentos, custo previsto, pagamentos, prestador e PIX; o lucro previsto é calculado por competência.
+- O saldo Acertos de obras pendentes é calculado automaticamente pela soma do que ainda falta pagar aos prestadores.
+- Pagamentos de obras não alteram o saldo bancário automaticamente; o banco continua sendo atualizado manualmente na aba Saldos.
 - A reserva em dólar é informada em USD nos Saldos e convertida pela PTAX de venda ou por uma cotação manual.
 - A reserva para juros de cauções é alimentada manualmente nos Saldos e fica protegida da distribuição.
 - Ao encerrar um lançamento, o valor previsto deixa de afetar a projeção, mesmo que o valor final seja diferente.
@@ -32,3 +35,4 @@ usuario2 = "defina-outra-senha-nova"
 Nunca publique o arquivo de segredos no repositório.
 
 Na primeira execução, o aplicativo preserva as linhas existentes e acrescenta os campos e páginas necessários no Google Sheets.
+
