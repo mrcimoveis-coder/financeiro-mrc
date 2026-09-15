@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import importlib
 import json
 import time
 import urllib.parse
@@ -12,6 +13,13 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from google.oauth2.service_account import Credentials
+
+import finance_core as _finance_core
+
+# O Streamlit Cloud pode manter o módulo em memória enquanto sincroniza um novo
+# commit. Recarregar aqui evita que app.py novo tente usar uma versão anterior
+# de finance_core durante a publicação.
+_finance_core = importlib.reload(_finance_core)
 
 from finance_core import (
     MESES,
