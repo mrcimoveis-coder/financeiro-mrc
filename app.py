@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import urllib.parse
 import urllib.request
@@ -34,7 +35,7 @@ MAIN_HEADERS = [
     "Natureza", "Série ID", "Criado Em", "Atualizado Em", "Moeda",
     "Valor na Moeda", "Cotação Utilizada", "Percentual Considerado",
 ]
-BALANCE_HEADERS = ["Grupo", "Descrição / Tipo", "Valor (R$)", "Ultima_Atualizacao"]
+BALANCE_HEADERS = ["Conta", "Valor"]
 PARAM_HEADERS = ["Chave", "Valor", "Descrição", "Atualizado Em"]
 QUOTE_HEADERS = ["Data", "Moeda", "Compra", "Venda", "Fonte", "Consultado Em"]
 CLOSE_HEADERS = [
@@ -227,8 +228,9 @@ def account_balances(ws) -> tuple[pd.DataFrame, float]:
     for column in BALANCE_HEADERS:
         if column not in frame:
             frame[column] = ""
-    frame["Valor Num"] = frame["Valor (R$)"].map(parse_money)
-    return frame, float(frame["Valor Num"].sum())
+    frame["Valor Num"] = frame["Valor"].map(parse_money)
+    actual = frame[~frame["Conta"].astype(str).str.lower().str.startswith("retirada_")]
+    return frame, float(actual["Valor Num"].sum())
 
 
 def display_money_table(frame: pd.DataFrame, columns: list[str]) -> None:
@@ -242,8 +244,9 @@ def display_money_table(frame: pd.DataFrame, columns: list[str]) -> None:
 login()
 
 try:
-    ws_main = main_sheet()
-    ws_balances = worksheet("Saldos_Bancarios", BALANCE_HEADERS, 100)
+    ws_history = main_sheet()
+    ws_forecast = worksheet("Forecast", MAIN_HEADERS, 2000)
+    ws_balances = worksheet("Saldos_Manuais", BALANCE_HEADERS, 100)
     ws_parameters = worksheet("Parametros", PARAM_HEADERS, 100)
     ws_quotes = worksheet("Cotacoes", QUOTE_HEADERS, 500)
     ws_closings = worksheet("Fechamentos", CLOSE_HEADERS, 500)
@@ -256,8 +259,9 @@ except Exception as exc:
     st.error(f"Não foi possível abrir a base Financeiro_MRC: {exc}")
     st.stop()
 
-records = load_records(ws_main)
+records = load_records(ws_forecast)
 launches = normalize_launches(records)
+history_launches = normalize_launches(load_records(ws_history))
 balances_df, bank_balance = account_balances(ws_balances)
 parameters = load_parameters(ws_parameters)
 today = date.today()
@@ -315,56 +319,96 @@ with tab_summary:
     display_money_table(view, ["Receitas", "Despesas", "Resultado", "Saldo projetado"])
 
 with tab_pending:
-    st.subheader("Receitas e despesas ainda abertas")
+    st.subheader("Lançamentos do mês")
+    st.caption("Edite o previsto quando necessário e marque Quitado quando o pagamento ou recebimento já estiver refletido no saldo bancário.")
     if open_df.empty:
         st.success("Não há lançamentos pendentes.")
     else:
-        f1, f2, f3 = st.columns(3)
-        month_filter = f1.selectbox("Mês", ["Todos"] + list(MESES.values()), key="pending_month")
+        f1, f2 = st.columns(2)
+        default_month = today.month if selected_year == today.year else 1
+        month_filter = f1.selectbox(
+            "Mês",
+            list(MESES),
+            index=default_month - 1,
+            format_func=lambda item: MESES[item],
+            key="pending_month",
+        )
         type_filter = f2.selectbox("Tipo", ["Todos", "Receita", "Despesa"], key="pending_type")
-        status_filter = f3.selectbox("Situação", ["Todos", "Pendente", "Previsto", "Confirmado", "Atrasado", "Parcial"], key="pending_status")
-        filtered = open_df[open_df["competencia"].dt.year == selected_year].copy()
-        if month_filter != "Todos":
-            filtered = filtered[filtered["competencia"].dt.month == list(MESES.values()).index(month_filter) + 1]
+        filtered = open_df[
+            (open_df["competencia"].dt.year == selected_year)
+            & (open_df["competencia"].dt.month == month_filter)
+        ].copy()
         if type_filter != "Todos":
             filtered = filtered[filtered["tipo"] == type_filter]
-        if status_filter != "Todos":
-            filtered = filtered[filtered["status"] == status_filter]
         if filtered.empty:
-            st.info("Nenhum lançamento encontrado com esses filtros.")
+            st.info("Nenhum lançamento aberto neste mês.")
         else:
-            labels = {
-                index: f"{row['vencimento'].strftime('%d/%m/%Y') if pd.notna(row['vencimento']) else 'sem data'} · {row['tipo']} · {row['historico']} · {format_brl(row['previsto'])}"
-                for index, row in filtered.iterrows()
-            }
-            chosen = st.selectbox("Selecione um lançamento", labels.keys(), format_func=lambda item: labels[item])
-            item = filtered.loc[chosen]
-            st.write(f"**Categoria:** {item['categoria']}  |  **Situação:** {item['status']}  |  **Conta:** {item['conta'] or 'não informada'}")
-            with st.form("settle_form"):
-                actual = st.number_input("Valor efetivamente pago ou recebido", min_value=0.0, value=float(item["previsto"]), step=10.0)
-                settled_date = st.date_input("Data da quitação", value=today, format="DD/MM/YYYY")
-                account = st.text_input("Conta utilizada", value=item["conta"])
-                observation = st.text_area("Observação", value=item["observacao"])
-                update_balance_now = st.checkbox("Também atualizarei os saldos bancários nesta mesma sessão")
-                settle = st.form_submit_button("Marcar como quitado", type="primary")
-            if settle:
-                update_row(
-                    ws_main,
-                    int(item["sheet_row"]),
-                    {
-                        "Status": "Quitado",
-                        "Valor Realizado (R$)": format_brl(actual),
-                        "Data Quitação": settled_date.strftime("%d/%m/%Y"),
-                        "Conta": account,
-                        "Observação": observation,
-                        "Atualizado Em": datetime.now().strftime("%d/%m/%Y %H:%M"),
-                    },
-                )
-                difference = actual - float(item["previsto"])
-                st.success(f"Quitação registrada. Diferença sobre o previsto: {format_brl(difference)}.")
-                if not update_balance_now:
-                    st.warning("Atualize o saldo da conta para que o painel reflita o pagamento real.")
-                st.cache_data.clear()
+            filtered = filtered.sort_values(["vencimento", "tipo", "historico"]).reset_index(drop=True)
+            editor_source = pd.DataFrame({
+                "Quitado": False,
+                "Vencimento": filtered["vencimento"].dt.strftime("%d/%m/%Y"),
+                "Tipo": filtered["tipo"],
+                "Lançamento": filtered["historico"],
+                "Previsto": filtered["previsto"].astype(float),
+                "Pago / recebido": filtered["previsto"].astype(float),
+                "sheet_row": filtered["sheet_row"].astype(int),
+                "serie_id": filtered["serie_id"],
+                "competencia": filtered["competencia"],
+            })
+            edited = st.data_editor(
+                editor_source,
+                use_container_width=True,
+                hide_index=True,
+                disabled=["Vencimento", "Tipo", "Lançamento", "sheet_row", "serie_id", "competencia"],
+                column_config={
+                    "Quitado": st.column_config.CheckboxColumn("Quitado"),
+                    "Previsto": st.column_config.NumberColumn("Valor previsto", min_value=0.0, format="R$ %.2f"),
+                    "Pago / recebido": st.column_config.NumberColumn("Valor pago / recebido", min_value=0.0, format="R$ %.2f"),
+                    "sheet_row": None,
+                    "serie_id": None,
+                    "competencia": None,
+                },
+                key=f"month_editor_{selected_year}_{month_filter}",
+            )
+            propagate = st.checkbox("Aplicar mudanças no valor previsto também aos meses seguintes da mesma série")
+            if st.button("Salvar alterações do mês", type="primary"):
+                changed = 0
+                settled = 0
+                for index, edited_row in edited.iterrows():
+                    original = editor_source.iloc[index]
+                    updates = {}
+                    planned_changed = abs(float(edited_row["Previsto"]) - float(original["Previsto"])) > 0.005
+                    if planned_changed:
+                        updates.update({
+                            "Valor (R$)": format_brl(edited_row["Previsto"]),
+                            "Valor Previsto (R$)": format_brl(edited_row["Previsto"]),
+                        })
+                        changed += 1
+                        if propagate and str(edited_row["serie_id"]).strip():
+                            later = open_df[
+                                (open_df["serie_id"] == edited_row["serie_id"])
+                                & (open_df["competencia"] > edited_row["competencia"])
+                            ]
+                            for _, later_row in later.iterrows():
+                                update_row(ws_forecast, int(later_row["sheet_row"]), {
+                                    "Valor (R$)": format_brl(edited_row["Previsto"]),
+                                    "Valor Previsto (R$)": format_brl(edited_row["Previsto"]),
+                                    "Atualizado Em": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                                })
+                    if bool(edited_row["Quitado"]):
+                        updates.update({
+                            "Status": "Recebido" if edited_row["Tipo"] == "Receita" else "Pago",
+                            "Valor Realizado (R$)": format_brl(edited_row["Pago / recebido"]),
+                            "Data Quitação": today.strftime("%d/%m/%Y"),
+                        })
+                        settled += 1
+                    if updates:
+                        updates["Atualizado Em"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+                        update_row(ws_forecast, int(edited_row["sheet_row"]), updates)
+                st.success(f"Alterações salvas: {changed} valor(es) ajustado(s) e {settled} lançamento(s) quitado(s).")
+                if settled:
+                    st.warning("Atualize os saldos reais das contas depois que os pagamentos ou recebimentos aparecerem no banco.")
+                st.rerun()
 
 with tab_launch:
     st.subheader("Cadastrar receita ou despesa")
@@ -403,7 +447,7 @@ with tab_launch:
                 "Valor na Moeda": amount if currency == "USD" else "", "Cotação Utilizada": used_quote if currency == "USD" else "",
                 "Percentual Considerado": percent if currency == "USD" else 100,
             }
-            append_dicts(ws_main, MAIN_HEADERS, [row])
+            append_dicts(ws_forecast, MAIN_HEADERS, [row])
             if currency == "USD" and quote:
                 append_dicts(ws_quotes, QUOTE_HEADERS, [{"Data": quote_date.strftime("%d/%m/%Y"), "Moeda": "USD", "Compra": "", "Venda": quote, "Fonte": "BCB PTAX", "Consultado Em": now}])
             st.success("Lançamento salvo.")
@@ -440,7 +484,7 @@ with tab_forecast:
                 interval_months=intervals[frequency], due_day=safe_day(due_day), account=account,
                 nature=nature, notes=notes,
             )
-            append_dicts(ws_main, MAIN_HEADERS, series_rows)
+            append_dicts(ws_forecast, MAIN_HEADERS, series_rows)
             append_dicts(ws_recurrences, ws_recurrences.row_values(1), [{
                 "Série ID": series_id, "Descrição": description, "Tipo": launch_type, "Categoria": category,
                 "Início": start.strftime("%d/%m/%Y"), "Ocorrências": int(occurrences),
@@ -449,6 +493,65 @@ with tab_forecast:
             }])
             st.success(f"Forecast criado com {int(occurrences)} ocorrências.")
 
+    st.markdown("---")
+    st.subheader(f"Matriz anual de {selected_year}")
+    open_series = open_launches(launches)
+    year_series = open_series[open_series["competencia"].dt.year == selected_year].copy() if not open_series.empty else open_series
+    if year_series.empty:
+        st.info("O forecast deste ano ainda não foi carregado.")
+    else:
+        year_series["mes_num"] = year_series["competencia"].dt.month
+        matrix = year_series.pivot_table(
+            index=["tipo", "historico"], columns="mes_num", values="previsto", aggfunc="sum", fill_value=0.0
+        ).reset_index()
+        for month_number in range(1, 13):
+            if month_number not in matrix:
+                matrix[month_number] = 0.0
+        matrix = matrix[["tipo", "historico", *range(1, 13)]].rename(
+            columns={"tipo": "Tipo", "historico": "Lançamento", **MESES}
+        )
+        display_money_table(matrix, list(MESES.values()))
+
+    st.subheader("Alterar valores a partir de um mês")
+    editable_series = year_series[year_series["serie_id"].astype(str).str.strip() != ""] if not year_series.empty else year_series
+    if editable_series.empty:
+        st.info("Não há séries editáveis neste ano.")
+    else:
+        series_labels = (
+            editable_series.sort_values(["historico", "competencia"])
+            .drop_duplicates("serie_id")
+            .set_index("serie_id")["historico"]
+            .to_dict()
+        )
+        with st.form("adjust_series"):
+            selected_series = st.selectbox(
+                "Lançamento",
+                list(series_labels),
+                format_func=lambda item: series_labels[item],
+            )
+            a, b = st.columns(2)
+            change_month = a.selectbox("Alterar a partir do mês", list(MESES), format_func=lambda item: MESES[item])
+            new_value = b.number_input("Novo valor por mês", min_value=0.0, step=100.0)
+            apply_change = st.form_submit_button("Aplicar aos meses seguintes", type="primary")
+        if apply_change:
+            cutoff = pd.Timestamp(selected_year, change_month, 1)
+            affected = editable_series[
+                (editable_series["serie_id"] == selected_series)
+                & (editable_series["competencia"] >= cutoff)
+            ]
+            for _, row in affected.iterrows():
+                update_row(
+                    ws_forecast,
+                    int(row["sheet_row"]),
+                    {
+                        "Valor (R$)": format_brl(new_value),
+                        "Valor Previsto (R$)": format_brl(new_value),
+                        "Atualizado Em": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                    },
+                )
+            st.success(f"{len(affected)} mês(es) atualizado(s).")
+            st.rerun()
+
 with tab_balances:
     st.subheader("Saldos bancários e investimentos")
     st.caption("Informe o saldo real atual. Não desconte novamente os lançamentos já quitados: eles já estão refletidos nesses saldos.")
@@ -456,7 +559,6 @@ with tab_balances:
     edited = st.data_editor(edit, use_container_width=True, hide_index=True, num_rows="dynamic")
     if st.button("Salvar todos os saldos", type="primary"):
         now = datetime.now().strftime("%d/%m/%Y às %H:%M")
-        edited["Ultima_Atualizacao"] = now
         ws_balances.clear()
         ws_balances.update("A1", [BALANCE_HEADERS] + edited.fillna("").values.tolist(), value_input_option="USER_ENTERED")
         st.success(f"Saldos atualizados em {now}.")
@@ -464,7 +566,8 @@ with tab_balances:
 
 with tab_history:
     st.subheader("Histórico e diferenças")
-    history = variance(launches)
+    combined_history = pd.concat([history_launches, launches], ignore_index=True) if not history_launches.empty else launches
+    history = variance(combined_history)
     if history.empty:
         st.info("Ainda não existem quitações com valor realizado.")
     else:
@@ -503,7 +606,32 @@ with tab_settings:
                 "percentual_socio_1": partner1, "percentual_socio_2": partner2,
                 "percentual_usd": usd_percent, "cotacao_manual_usd": usd_manual,
             })
-            st.success("Configurações salvas.")
+            st.toast("Configurações salvas.")
+            st.rerun()
+
+    st.markdown("---")
+    st.subheader("Importar previsão")
+    st.caption("Use este recurso apenas para trazer uma previsão inicial. Linhas cujo ID já exista não serão duplicadas.")
+    forecast_file = st.file_uploader("Arquivo da previsão", type=["tsv", "csv"], key="forecast_import")
+    if forecast_file is not None:
+        raw = forecast_file.getvalue()
+        separator = "\t" if forecast_file.name.lower().endswith(".tsv") else ";"
+        try:
+            imported = pd.read_csv(io.BytesIO(raw), sep=separator, dtype=str, keep_default_na=False)
+        except Exception as exc:
+            st.error(f"Não foi possível ler o arquivo: {exc}")
+            imported = pd.DataFrame()
+        missing_headers = [header for header in MAIN_HEADERS if header not in imported.columns]
+        if missing_headers:
+            st.error("O arquivo não tem todas as colunas esperadas.")
+        elif not imported.empty:
+            existing_ids = {str(item.get("ID", "")).strip() for item in load_records(ws_forecast)}
+            new_records = imported[~imported["ID"].astype(str).str.strip().isin(existing_ids)].copy()
+            st.info(f"{len(imported)} linhas lidas; {len(new_records)} novas linhas prontas para importar.")
+            if st.button("Importar novas linhas", type="primary", disabled=new_records.empty):
+                append_dicts(ws_forecast, MAIN_HEADERS, new_records.to_dict("records"))
+                st.toast(f"{len(new_records)} lançamentos importados.")
+                st.rerun()
 
     st.markdown("---")
     st.write("**Distribuição estimada no final do ano**")

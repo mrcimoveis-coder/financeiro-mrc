@@ -25,8 +25,8 @@ MESES = {
 }
 MESES_NUM = {nome: numero for numero, nome in MESES.items()}
 
-STATUS_ABERTOS = {"pendente", "previsto", "confirmado", "atrasado", "parcial"}
-STATUS_QUITADOS = {"quitado", "recebido", "pago"}
+STATUS_ABERTOS = {"pendente", "previsto", "atrasado", "parcial"}
+STATUS_QUITADOS = {"quitado", "recebido", "confirmado", "pago"}
 
 
 def parse_money(value) -> float:
@@ -92,8 +92,6 @@ def normalize_status(value: str) -> str:
         return "Atrasado"
     if text == "parcial":
         return "Parcial"
-    if text == "confirmado":
-        return "Confirmado"
     if text == "previsto":
         return "Previsto"
     return "Pendente"
@@ -115,7 +113,10 @@ def normalize_launches(records: list[dict], default_year: int = 2026) -> pd.Data
         if planned == 0:
             planned = parse_money(record.get("Valor (R$)"))
         actual = parse_money(record.get("Valor Realizado (R$)"))
-        status = normalize_status(record.get("Status"))
+        raw_status = str(record.get("Status") or "").strip().lower()
+        status = normalize_status(raw_status)
+        if raw_status == "confirmado" and actual == 0:
+            actual = planned
         launch_type = normalize_type(record.get("Tipo de Operação"))
         currency = str(record.get("Moeda") or "BRL").strip().upper()
         currency_value = parse_money(record.get("Valor na Moeda"))
