@@ -23,6 +23,7 @@ from finance_core import (
     open_launches,
     parse_money,
     projection,
+    realization_tracking,
     safe_day,
     variance,
 )
@@ -335,8 +336,8 @@ if caution_sync_error is None and abs(float(parameters["caucoes_protegidas"]) - 
     parameters["caucoes_protegidas"] = synced_caution
 open_df = open_launches(launches)
 future_open = open_df[open_df["competencia"] >= pd.Timestamp(today.year, today.month, 1)] if not open_df.empty else open_df
-pending_income = float(future_open.loc[future_open["tipo"] == "Receita", "previsto"].sum()) if not future_open.empty else 0.0
-pending_expense = float(future_open.loc[future_open["tipo"] == "Despesa", "previsto"].sum()) if not future_open.empty else 0.0
+pending_income = float(future_open.loc[future_open["tipo"] == "Receita", "pendente"].sum()) if not future_open.empty else 0.0
+pending_expense = float(future_open.loc[future_open["tipo"] == "Despesa", "pendente"].sum()) if not future_open.empty else 0.0
 year_end = float(projected.iloc[-1]["saldo_projetado"]) if not projected.empty else bank_balance
 protected = synced_caution + parameters["reserva_mrc"]
 distributable = year_end - protected
@@ -367,7 +368,10 @@ with tab_summary:
 
 with tab_pending:
     st.subheader("Lançamentos do mês")
-    st.caption("Edite o previsto quando necessário e marque Quitado quando o pagamento ou recebimento já estiver refletido no saldo bancário.")
+    st.caption(
+        "Informe o total pago ou recebido até agora. A projeção considera somente o saldo que ainda falta. "
+        "Use Encerrar quando o lançamento terminou com valor diferente do previsto."
+    )
     if open_df.empty:
         st.success("Não há lançamentos pendentes.")
     else:
@@ -392,12 +396,14 @@ with tab_pending:
         else:
             filtered = filtered.sort_values(["vencimento", "tipo", "historico"]).reset_index(drop=True)
             editor_source = pd.DataFrame({
-                "Quitado": False,
+                "Encerrar": False,
                 "Vencimento": filtered["vencimento"].dt.strftime("%d/%m/%Y"),
                 "Tipo": filtered["tipo"],
                 "Lançamento": filtered["historico"],
+                "Situação": filtered["status"],
                 "Previsto": filtered["previsto"].astype(float),
-                "Pago / recebido": filtered["previsto"].astype(float),
+                "Pago / recebido acumulado": filtered["realizado"].astype(float),
+                "A pagar / receber": filtered["pendente"].astype(float),
                 "sheet_row": filtered["sheet_row"].astype(int),
                 "serie_id": filtered["serie_id"],
                 "competencia": filtered["competencia"],
@@ -406,11 +412,14 @@ with tab_pending:
                 editor_source,
                 use_container_width=True,
                 hide_index=True,
-                disabled=["Vencimento", "Tipo", "Lançamento", "sheet_row", "serie_id", "competencia"],
+                disabled=["Vencimento", "Tipo", "Lançamento", "Situação", "A pagar / receber", "sheet_row", "serie_id", "competencia"],
                 column_config={
-                    "Quitado": st.column_config.CheckboxColumn("Quitado"),
+                    "Encerrar": st.column_config.CheckboxColumn("Encerrar"),
                     "Previsto": st.column_config.NumberColumn("Valor previsto", min_value=0.0, format="R$ %.2f"),
-                    "Pago / recebido": st.column_config.NumberColumn("Valor pago / recebido", min_value=0.0, format="R$ %.2f"),
+                    "Pago / recebido acumulado": st.column_config.NumberColumn(
+                        "Pago / recebido acumulado", min_value=0.0, format="R$ %.2f"
+                    ),
+                    "A pagar / receber": st.column_config.NumberColumn("A pagar / receber", format="R$ %.2f"),
                     "sheet_row": None,
                     "serie_id": None,
                     "competencia": None,
@@ -421,14 +430,18 @@ with tab_pending:
             if st.button("Salvar alterações do mês", type="primary"):
                 changed = 0
                 settled = 0
+                partial = 0
                 for index, edited_row in edited.iterrows():
                     original = editor_source.iloc[index]
                     updates = {}
-                    planned_changed = abs(float(edited_row["Previsto"]) - float(original["Previsto"])) > 0.005
+                    planned = float(edited_row["Previsto"])
+                    actual = float(edited_row["Pago / recebido acumulado"])
+                    planned_changed = abs(planned - float(original["Previsto"])) > 0.005
+                    actual_changed = abs(actual - float(original["Pago / recebido acumulado"])) > 0.005
                     if planned_changed:
                         updates.update({
-                            "Valor (R$)": format_brl(edited_row["Previsto"]),
-                            "Valor Previsto (R$)": format_brl(edited_row["Previsto"]),
+                            "Valor (R$)": format_brl(planned),
+                            "Valor Previsto (R$)": format_brl(planned),
                         })
                         changed += 1
                         if propagate and str(edited_row["serie_id"]).strip():
@@ -438,23 +451,41 @@ with tab_pending:
                             ]
                             for _, later_row in later.iterrows():
                                 update_row(ws_forecast, int(later_row["sheet_row"]), {
-                                    "Valor (R$)": format_brl(edited_row["Previsto"]),
-                                    "Valor Previsto (R$)": format_brl(edited_row["Previsto"]),
+                                    "Valor (R$)": format_brl(planned),
+                                    "Valor Previsto (R$)": format_brl(planned),
                                     "Atualizado Em": datetime.now().strftime("%d/%m/%Y %H:%M"),
                                 })
-                    if bool(edited_row["Quitado"]):
+                    close_launch = bool(edited_row["Encerrar"]) or (planned > 0 and actual >= planned)
+                    if close_launch:
                         updates.update({
                             "Status": "Recebido" if edited_row["Tipo"] == "Receita" else "Pago",
-                            "Valor Realizado (R$)": format_brl(edited_row["Pago / recebido"]),
+                            "Valor Realizado (R$)": format_brl(actual),
                             "Data Quitação": today.strftime("%d/%m/%Y"),
                         })
                         settled += 1
+                    elif actual > 0 and actual_changed:
+                        updates.update({
+                            "Status": "Parcial",
+                            "Valor Realizado (R$)": format_brl(actual),
+                            "Data Quitação": "",
+                        })
+                        if actual_changed:
+                            partial += 1
+                    elif actual_changed:
+                        updates.update({
+                            "Status": "Pendente",
+                            "Valor Realizado (R$)": "",
+                            "Data Quitação": "",
+                        })
                     if updates:
                         updates["Atualizado Em"] = datetime.now().strftime("%d/%m/%Y %H:%M")
                         update_row(ws_forecast, int(edited_row["sheet_row"]), updates)
-                st.success(f"Alterações salvas: {changed} valor(es) ajustado(s) e {settled} lançamento(s) quitado(s).")
-                if settled:
-                    st.warning("Atualize os saldos reais das contas depois que os pagamentos ou recebimentos aparecerem no banco.")
+                st.success(
+                    f"Alterações salvas: {changed} previsto(s) ajustado(s), "
+                    f"{partial} parcial(is) e {settled} encerrado(s)."
+                )
+                if partial or settled:
+                    st.warning("Confirme que os valores realizados já estão refletidos nos saldos reais das contas.")
                 st.rerun()
 
 with tab_launch:
@@ -542,6 +573,7 @@ with tab_forecast:
 
     st.markdown("---")
     st.subheader(f"Matriz anual de {selected_year}")
+    st.caption("A matriz mostra somente os valores que ainda faltam receber ou pagar em cada mês.")
     open_series = open_launches(launches)
     year_series = open_series[open_series["competencia"].dt.year == selected_year].copy() if not open_series.empty else open_series
     if year_series.empty:
@@ -549,7 +581,7 @@ with tab_forecast:
     else:
         year_series["mes_num"] = year_series["competencia"].dt.month
         matrix = year_series.pivot_table(
-            index=["tipo", "historico"], columns="mes_num", values="previsto", aggfunc="sum", fill_value=0.0
+            index=["tipo", "historico"], columns="mes_num", values="pendente", aggfunc="sum", fill_value=0.0
         ).reset_index()
         for month_number in range(1, 13):
             if month_number not in matrix:
@@ -612,11 +644,24 @@ with tab_balances:
         st.cache_data.clear()
 
 with tab_history:
-    st.subheader("Histórico e diferenças")
+    st.subheader("Histórico de realizações")
     combined_history = pd.concat([history_launches, launches], ignore_index=True) if not history_launches.empty else launches
+    tracked = realization_tracking(combined_history)
+    tracked = tracked[
+        (tracked["competencia"].dt.year == selected_year) & (tracked["realizado"] > 0)
+    ].copy() if not tracked.empty else tracked
+    if tracked.empty:
+        st.info("Ainda não existem pagamentos ou recebimentos informados.")
+    else:
+        tracking_view = tracked[[
+            "competencia", "tipo", "categoria", "historico", "previsto", "realizado", "pendente", "status", "conta"
+        ]].sort_values(["competencia", "tipo", "historico"])
+        display_money_table(tracking_view, ["previsto", "realizado", "pendente"])
+
+    st.subheader("Diferenças de lançamentos encerrados")
     history = variance(combined_history)
     if history.empty:
-        st.info("Ainda não existem quitações com valor realizado.")
+        st.info("Ainda não existem lançamentos encerrados com valor realizado.")
     else:
         history = history[history["competencia"].dt.year == selected_year].copy()
         view = history[["competencia", "tipo", "categoria", "historico", "previsto", "realizado", "variacao", "conta"]]

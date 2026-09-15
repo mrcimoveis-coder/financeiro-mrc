@@ -6,8 +6,10 @@ Aplicativo Streamlit integrado ao Google Sheets `Financeiro_MRC`.
 
 - O saldo bancário atualizado representa tudo que já ocorreu.
 - Somente receitas e despesas abertas entram na projeção futura.
-- Ao quitar um lançamento, o valor previsto deixa de afetar a projeção.
-- O valor realizado permanece no histórico para mostrar diferenças.
+- Cada lançamento mantém o valor previsto, o total já pago ou recebido e o saldo pendente.
+- Pagamentos e recebimentos parciais reduzem somente o que ainda falta na projeção.
+- Ao encerrar um lançamento, o valor previsto deixa de afetar a projeção, mesmo que o valor final seja diferente.
+- O valor realizado permanece no histórico para mostrar o andamento e as diferenças finais.
 - O forecast gera ocorrências mensais, trimestrais, semestrais ou anuais para qualquer ano.
 - Lançamentos em dólar podem utilizar automaticamente a PTAX de venda do Banco Central.
 

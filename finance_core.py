@@ -186,7 +186,22 @@ def normalize_launches(records: list[dict], default_year: int = 2026) -> pd.Data
 def open_launches(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df.copy()
-    return df[df["status"].str.lower().isin(STATUS_ABERTOS)].copy()
+    opened = df[df["status"].str.lower().isin(STATUS_ABERTOS)].copy()
+    opened["pendente"] = (opened["previsto"] - opened["realizado"]).clip(lower=0.0)
+    return opened
+
+
+def realization_tracking(df: pd.DataFrame) -> pd.DataFrame:
+    """Add the amount still open without losing the original planned amount."""
+    if df.empty:
+        result = df.copy()
+        result["pendente"] = pd.Series(dtype=float)
+        return result
+    result = df.copy()
+    result["pendente"] = (result["previsto"] - result["realizado"]).clip(lower=0.0)
+    closed = ~result["status"].str.lower().isin(STATUS_ABERTOS)
+    result.loc[closed, "pendente"] = 0.0
+    return result
 
 
 def monthly_forecast(df: pd.DataFrame, year: int) -> pd.DataFrame:
@@ -203,8 +218,7 @@ def monthly_forecast(df: pd.DataFrame, year: int) -> pd.DataFrame:
         months["resultado"] = 0.0
         return months
     opened = opened[opened["competencia"].dt.year == year].copy()
-    opened["signed"] = opened["previsto"].where(opened["tipo"] == "Receita", -opened["previsto"])
-    grouped = opened.groupby(["competencia", "tipo"], dropna=False)["previsto"].sum().unstack(fill_value=0)
+    grouped = opened.groupby(["competencia", "tipo"], dropna=False)["pendente"].sum().unstack(fill_value=0)
     grouped = grouped.rename(columns={"Receita": "receitas", "Despesa": "despesas"}).reset_index()
     months = months.merge(grouped, on="competencia", how="left").fillna(0.0)
     for column in ("receitas", "despesas"):
