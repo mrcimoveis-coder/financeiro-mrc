@@ -117,6 +117,10 @@ def operational_balance_item(record: dict) -> tuple[str, float] | None:
         label = "Recebimentos atrasados — meses anteriores"
     elif "recebimentos atrasados" in description and "mes atual" in description:
         label = "Recebimentos atrasados — mês atual"
+    elif description == "emprestimo marcos veloso":
+        label = "Empréstimo a receber — Marcos Veloso"
+    elif description == "emprestimo compra sala clsw 304":
+        label = "Empréstimo a receber — Compra Sala CLSW 304"
     else:
         return None
 
