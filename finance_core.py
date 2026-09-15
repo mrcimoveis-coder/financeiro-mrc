@@ -130,10 +130,14 @@ def operational_balance_item(record: dict) -> tuple[str, float] | None:
 def normalize_launches(records: list[dict], default_year: int = 2026) -> pd.DataFrame:
     rows = []
     for sheet_row, record in enumerate(records, start=2):
+        if operational_balance_item(record) is not None:
+            continue
         competence = month_start(record.get("Competência") or record.get("Mês"), default_year)
         due = parse_date(record.get("Vencimento"), default_year)
         if pd.isna(due) and pd.notna(competence):
             due = competence
+                    
+            
         planned = parse_money(record.get("Valor Previsto (R$)"))
         if planned == 0:
             planned = parse_money(record.get("Valor (R$)"))
