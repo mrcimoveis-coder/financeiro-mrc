@@ -4,6 +4,7 @@ import calendar
 import re
 import uuid
 from datetime import date, datetime
+import unicodedata
 from decimal import Decimal, InvalidOperation
 
 import pandas as pd
@@ -100,6 +101,30 @@ def normalize_status(value: str) -> str:
 def normalize_type(value: str) -> str:
     text = str(value or "Despesa").strip().lower()
     return "Receita" if text in {"receita", "entrada", "crédito", "credito"} else "Despesa"
+
+
+def normalize_label(value: object) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    return " ".join("".join(char for char in text if not unicodedata.combining(char)).casefold().split())
+
+
+def operational_balance_item(record: dict) -> tuple[str, float] | None:
+    """Convert imported point-in-time positions into signed balance items."""
+    description = normalize_label(record.get("Histórico"))
+    if description.startswith("saldos disponiveis superlogica"):
+        label = "Superlógica — repasses a clientes"
+    elif "recebimentos atrasados" in description and "meses anteriores" in description:
+        label = "Recebimentos atrasados — meses anteriores"
+    elif "recebimentos atrasados" in description and "mes atual" in description:
+        label = "Recebimentos atrasados — mês atual"
+    else:
+        return None
+
+    value = parse_money(record.get("Valor Previsto (R$)"))
+    if value == 0:
+        value = parse_money(record.get("Valor (R$)"))
+    signed_value = abs(value) if normalize_type(record.get("Tipo de Operação")) == "Receita" else -abs(value)
+    return label, signed_value
 
 
 def normalize_launches(records: list[dict], default_year: int = 2026) -> pd.DataFrame:
