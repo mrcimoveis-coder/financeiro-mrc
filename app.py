@@ -16,6 +16,8 @@ from google.oauth2.service_account import Credentials
 from finance_core import (
     MESES,
     format_brl,
+    fx_balance_brl,
+    is_caution_interest_reserve,
     make_recurrence_rows,
     monthly_forecast,
     new_id,
@@ -51,8 +53,10 @@ DEFAULT_PARAMETERS = {
     "reserva_mrc": (0.0, "Reserva mínima mantida pela MRC"),
     "percentual_socio_1": (50.0, "Percentual do primeiro sócio"),
     "percentual_socio_2": (50.0, "Percentual do segundo sócio"),
-    "percentual_usd": (95.0, "Percentual da reserva em dólar considerado no forecast"),
+    "reserva_usd": (0.0, "Saldo da reserva mantido em dólar"),
+    "percentual_usd": (95.0, "Percentual da reserva em dólar considerado no saldo"),
     "cotacao_manual_usd": (0.0, "Cotação manual; zero utiliza a PTAX de venda"),
+    "ultima_cotacao_usd": (0.0, "Última cotação utilizada na reserva em dólar"),
 }
 
 
@@ -300,9 +304,27 @@ except Exception as exc:
 records = load_records(ws_forecast)
 launches = normalize_launches(records)
 history_launches = normalize_launches(load_records(ws_history))
-balances_df, bank_balance = account_balances(ws_balances)
+balances_df, brl_balance = account_balances(ws_balances)
 parameters = load_parameters(ws_parameters)
 today = date.today()
+interest_reserve_signed = float(
+    balances_df.loc[
+        balances_df["Conta"].map(is_caution_interest_reserve),
+        "Valor Num",
+    ].sum()
+) if not balances_df.empty else 0.0
+interest_reserve = abs(interest_reserve_signed)
+brl_balance -= interest_reserve_signed
+automatic_quote, automatic_quote_date = ptax_sale(today)
+saved_quote = float(parameters["ultima_cotacao_usd"])
+manual_quote = float(parameters["cotacao_manual_usd"])
+used_usd_quote = manual_quote or automatic_quote or saved_quote
+usd_balance_brl = fx_balance_brl(
+    parameters["reserva_usd"],
+    used_usd_quote,
+    parameters["percentual_usd"],
+)
+bank_balance = brl_balance + usd_balance_brl
 
 with st.sidebar:
     st.image("https://raw.githubusercontent.com/mrcimoveis-coder/portal-intranet/main/logo.jpeg", width=220)
@@ -339,7 +361,7 @@ future_open = open_df[open_df["competencia"] >= pd.Timestamp(today.year, today.m
 pending_income = float(future_open.loc[future_open["tipo"] == "Receita", "pendente"].sum()) if not future_open.empty else 0.0
 pending_expense = float(future_open.loc[future_open["tipo"] == "Despesa", "pendente"].sum()) if not future_open.empty else 0.0
 year_end = float(projected.iloc[-1]["saldo_projetado"]) if not projected.empty else bank_balance
-protected = synced_caution + parameters["reserva_mrc"]
+protected = synced_caution + parameters["reserva_mrc"] + interest_reserve
 distributable = year_end - protected
 
 with tab_summary:
@@ -632,8 +654,87 @@ with tab_forecast:
             st.rerun()
 
 with tab_balances:
-    st.subheader("Saldos bancários e investimentos")
-    st.caption("Informe o saldo real atual. Não desconte novamente os lançamentos já quitados: eles já estão refletidos nesses saldos.")
+    st.subheader("Reserva em dólar")
+    st.caption("Informe o saldo em USD. O equivalente em reais já compõe os saldos atualizados e não entra novamente no forecast.")
+    mode_options = ["PTAX automática", "Cotação manual"]
+    quote_mode = st.radio(
+        "Cotação utilizada",
+        mode_options,
+        index=1 if manual_quote > 0 else 0,
+        horizontal=True,
+        key="usd_quote_mode",
+    )
+    u1, u2, u3 = st.columns(3)
+    usd_amount = u1.number_input(
+        "Saldo em dólar (USD)",
+        min_value=0.0,
+        value=float(parameters["reserva_usd"]),
+        step=100.0,
+        format="%.2f",
+    )
+    usd_manual_input = u2.number_input(
+        "Cotação manual",
+        min_value=0.0,
+        value=manual_quote,
+        step=0.01,
+        format="%.4f",
+        disabled=quote_mode == "PTAX automática",
+    )
+    usd_percent = u3.number_input(
+        "Percentual considerado",
+        min_value=0.0,
+        max_value=100.0,
+        value=float(parameters["percentual_usd"]),
+        step=1.0,
+    )
+    selected_quote = (
+        usd_manual_input
+        if quote_mode == "Cotação manual"
+        else (automatic_quote or saved_quote)
+    )
+    selected_usd_balance = fx_balance_brl(usd_amount, selected_quote, usd_percent)
+    m1, m2 = st.columns(2)
+    m1.metric("Cotação aplicada", f"R$ {selected_quote:.4f}" if selected_quote else "Indisponível")
+    m2.metric("Saldo convertido para reais", format_brl(selected_usd_balance))
+    if quote_mode == "PTAX automática" and automatic_quote and automatic_quote_date:
+        st.caption(f"PTAX de venda do Banco Central em {automatic_quote_date.strftime('%d/%m/%Y')}.")
+    elif quote_mode == "PTAX automática" and saved_quote:
+        st.warning("A PTAX está temporariamente indisponível. O sistema está exibindo a última cotação salva.")
+    elif quote_mode == "PTAX automática":
+        st.warning("A PTAX está indisponível e ainda não existe uma cotação anterior salva.")
+
+    if st.button("Salvar reserva em dólar", type="primary"):
+        if quote_mode == "Cotação manual" and usd_manual_input <= 0:
+            st.error("Informe uma cotação manual maior que zero.")
+        elif selected_quote <= 0:
+            st.error("Não foi possível obter uma cotação. Selecione Cotação manual e informe o valor.")
+        else:
+            save_parameters(ws_parameters, {
+                "reserva_usd": usd_amount,
+                "percentual_usd": usd_percent,
+                "cotacao_manual_usd": usd_manual_input if quote_mode == "Cotação manual" else 0.0,
+                "ultima_cotacao_usd": selected_quote,
+            })
+            now = datetime.now().strftime("%d/%m/%Y %H:%M")
+            append_dicts(ws_quotes, QUOTE_HEADERS, [{
+                "Data": (automatic_quote_date or today).strftime("%d/%m/%Y"),
+                "Moeda": "USD",
+                "Compra": "",
+                "Venda": selected_quote,
+                "Fonte": "Manual" if quote_mode == "Cotação manual" else "BCB PTAX",
+                "Consultado Em": now,
+            }])
+            st.success("Reserva em dólar atualizada.")
+            st.cache_data.clear()
+            st.rerun()
+
+    st.markdown("---")
+    st.subheader("Saldos bancários e investimentos em reais")
+    st.caption(
+        "Informe o saldo real atual. A reserva para juros de cauções fica nesta lista, mas é protegida e não aumenta o valor distribuível."
+    )
+    if interest_reserve:
+        st.info(f"Reserva protegida para juros de cauções: {format_brl(interest_reserve)}.")
     edit = balances_df[BALANCE_HEADERS].copy()
     edited = st.data_editor(edit, use_container_width=True, hide_index=True, num_rows="dynamic")
     if st.button("Salvar todos os saldos", type="primary"):
@@ -672,7 +773,7 @@ with tab_history:
             display_money_table(summary.sort_values("variacao", key=lambda s: s.abs(), ascending=False), ["previsto", "realizado", "variacao"])
 
 with tab_settings:
-    st.subheader("Reservas, distribuição e dólar")
+    st.subheader("Reservas e distribuição")
     if caution_sync_error is None:
         st.success(
             f"Cauções protegidas sincronizadas com a Gestão de Cauções: {format_brl(synced_caution)} "
@@ -680,11 +781,6 @@ with tab_settings:
         )
     else:
         st.warning("A Gestão de Cauções está temporariamente indisponível. O valor manual salvo será usado até a próxima sincronização.")
-    quote, quote_date = ptax_sale(today)
-    if quote:
-        st.info(f"PTAX de venda disponível: R$ {quote:.4f} em {quote_date.strftime('%d/%m/%Y')}.")
-    else:
-        st.warning("Não foi possível consultar a PTAX agora. A cotação manual poderá ser usada.")
     with st.form("parameters_form"):
         a, b = st.columns(2)
         caution = a.number_input(
@@ -699,9 +795,6 @@ with tab_settings:
         c, d = st.columns(2)
         partner1 = c.number_input("Percentual sócio 1", min_value=0.0, max_value=100.0, value=float(parameters["percentual_socio_1"]), step=1.0)
         partner2 = d.number_input("Percentual sócio 2", min_value=0.0, max_value=100.0, value=float(parameters["percentual_socio_2"]), step=1.0)
-        e, f = st.columns(2)
-        usd_percent = e.number_input("Percentual considerado para USD", min_value=0.0, max_value=100.0, value=float(parameters["percentual_usd"]), step=1.0)
-        usd_manual = f.number_input("Cotação manual do dólar (zero = PTAX)", min_value=0.0, value=float(parameters["cotacao_manual_usd"]), step=0.01, format="%.4f")
         save = st.form_submit_button("Salvar configurações", type="primary")
     if save:
         if abs(partner1 + partner2 - 100.0) > 0.01:
@@ -710,7 +803,6 @@ with tab_settings:
             save_parameters(ws_parameters, {
                 "caucoes_protegidas": caution, "reserva_mrc": reserve,
                 "percentual_socio_1": partner1, "percentual_socio_2": partner2,
-                "percentual_usd": usd_percent, "cotacao_manual_usd": usd_manual,
             })
             st.toast("Configurações salvas.")
             st.rerun()

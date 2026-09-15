@@ -5,6 +5,8 @@ from finance_core import (
     monthly_forecast,
     normalize_launches,
     operational_balance_item,
+    fx_balance_brl,
+    is_caution_interest_reserve,
     projection,
     realization_tracking,
     variance,
@@ -25,6 +27,23 @@ def launch(description, launch_type, planned, actual, status):
 
 
 class PartialRealizationTests(unittest.TestCase):
+    def test_dollar_reserve_is_a_balance_and_uses_selected_percentage(self):
+        record = launch("Reserva em Dolares (ultima coluna)", "Receita", 9_823, 0, "Previsto")
+
+        self.assertEqual(operational_balance_item(record), ("Reserva em dólar", 9_823))
+        self.assertTrue(normalize_launches([record]).empty)
+        self.assertEqual(fx_balance_brl(2_000, 5.17, 95), 9_823)
+
+    def test_caution_interest_fund_is_a_protected_balance(self):
+        record = launch("CAUÇÃO ALUGUEL (JUROS DO ANO)", "Despesa", 30_000, 0, "Previsto")
+
+        self.assertTrue(is_caution_interest_reserve(record["Histórico"]))
+        self.assertEqual(
+            operational_balance_item(record),
+            ("Reserva protegida — Juros de cauções", -30_000),
+        )
+        self.assertTrue(normalize_launches([record]).empty)
+
     def test_pending_construction_adjustments_are_treated_as_a_balance(self):
         record = launch("Acerto Obras Pendentes", "Receita", 25_000, 0, "Pendente")
 

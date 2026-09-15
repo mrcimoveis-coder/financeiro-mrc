@@ -55,6 +55,11 @@ def format_brl(value: float) -> str:
     return f"R$ {float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def fx_balance_brl(amount: float, quotation: float, percentage: float = 100.0) -> float:
+    """Convert a foreign-currency balance to BRL using the selected valuation percentage."""
+    return max(0.0, float(amount)) * max(0.0, float(quotation)) * max(0.0, float(percentage)) / 100.0
+
+
 def parse_date(value, default_year: int = 2026) -> pd.Timestamp:
     if value is None or str(value).strip() == "":
         return pd.NaT
@@ -108,6 +113,11 @@ def normalize_label(value: object) -> str:
     return " ".join("".join(char for char in text if not unicodedata.combining(char)).casefold().split())
 
 
+def is_caution_interest_reserve(value: object) -> bool:
+    text = normalize_label(value)
+    return "juros" in text and "caucao" in text
+
+
 def operational_balance_item(record: dict) -> tuple[str, float] | None:
     """Convert imported point-in-time positions into signed balance items."""
     description = normalize_label(record.get("Histórico"))
@@ -123,6 +133,10 @@ def operational_balance_item(record: dict) -> tuple[str, float] | None:
         label = "Empréstimo a receber — Compra Sala CLSW 304"
     elif "acerto" in description and "obra" in description and "pendente" in description:
         label = "Acertos de obras pendentes"
+    elif "reserva" in description and "dolar" in description:
+        label = "Reserva em dólar"
+    elif is_caution_interest_reserve(description):
+        label = "Reserva protegida — Juros de cauções"
     else:
         return None
 
