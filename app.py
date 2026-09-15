@@ -83,6 +83,14 @@ st.markdown(
     #MainMenu, footer {visibility:hidden}
     .block-container {padding-top:1.2rem; max-width:1450px}
     div[data-testid="stMetric"] {background:#fff; border:1px solid #e5e7eb; border-top:4px solid #c4001a; padding:14px; border-radius:10px}
+    div[data-testid="stMetric"] [data-testid="stMetricLabel"],
+    div[data-testid="stMetric"] [data-testid="stMetricValue"],
+    div[data-testid="stMetric"] [data-testid="stMetricLabel"] p,
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] div {color:#172033 !important; opacity:1 !important}
+    @media (max-width: 768px) {
+        div[data-testid="stMetric"] {min-height:104px; padding:12px}
+        div[data-testid="stMetric"] [data-testid="stMetricValue"] {font-size:1.45rem !important}
+    }
     .status-note {padding:.7rem 1rem; border-radius:8px; background:#f7f3fb; border-left:4px solid #8064a2}
     </style>
     """,
@@ -395,6 +403,7 @@ pending_expense = float(future_open.loc[future_open["tipo"] == "Despesa", "pende
 year_end = float(projected.iloc[-1]["saldo_projetado"]) if not projected.empty else bank_balance
 protected = synced_caution + parameters["reserva_mrc"] + interest_reserve
 distributable = distributable_balance(year_end, protected, distribution_liabilities)
+combined_history = pd.concat([history_launches, launches], ignore_index=True) if not history_launches.empty else launches
 
 with tab_summary:
     c1, c2, c3, c4 = st.columns(4)
@@ -402,6 +411,25 @@ with tab_summary:
     c2.metric("Receitas pendentes", format_brl(pending_income))
     c3.metric("Despesas pendentes", format_brl(pending_expense))
     c4.metric("Sobra / falta projetada", format_brl(distributable))
+
+    st.subheader("Receitas e despesas realizadas - meses anteriores")
+    previous_month = pd.Timestamp(today.year, today.month, 1) - pd.offsets.MonthBegin(1)
+    quick_history = monthly_realized_history(combined_history, selected_year)
+    if selected_year == today.year:
+        quick_history = quick_history[quick_history["competencia"] <= previous_month]
+    quick_history_view = quick_history[[
+        "mes", "receitas_realizadas", "despesas_realizadas", "resultado_realizado"
+    ]].rename(columns={
+        "mes": "Mês",
+        "receitas_realizadas": "Receitas realizadas",
+        "despesas_realizadas": "Despesas realizadas",
+        "resultado_realizado": "Resultado realizado",
+    })
+    display_money_table(
+        quick_history_view,
+        ["Receitas realizadas", "Despesas realizadas", "Resultado realizado"],
+    )
+    st.caption("O detalhamento completo continua disponível na aba Histórico.")
 
     st.markdown('<div class="status-note">Ao quitar um lançamento, ele deixa de afetar a projeção. O valor realizado fica apenas no histórico, pois o débito ou crédito já estará refletido no saldo bancário atualizado.</div>', unsafe_allow_html=True)
     st.subheader(f"Projeção mensal de {selected_year}")
@@ -788,7 +816,6 @@ with tab_balances:
 
 with tab_history:
     st.subheader("Histórico consolidado mensal")
-    combined_history = pd.concat([history_launches, launches], ignore_index=True) if not history_launches.empty else launches
     consolidated = monthly_realized_history(combined_history, selected_year)
     history_cutoff = pd.Timestamp(selected_year, 12, 1)
     if selected_year == today.year:
