@@ -23,6 +23,7 @@ _finance_core = importlib.reload(_finance_core)
 
 from finance_core import (
     MESES,
+    construction_payables,
     distributable_balance,
     format_brl,
     fx_balance_brl,
@@ -34,9 +35,11 @@ from finance_core import (
     make_recurrence_rows,
     monthly_forecast,
     monthly_realized_history,
+    monthly_work_summary,
     new_id,
     normalize_label,
     normalize_launches,
+    normalize_works,
     open_launches,
     parse_money,
     projection,
@@ -56,6 +59,12 @@ MAIN_HEADERS = [
     "Valor na Moeda", "Cotação Utilizada", "Percentual Considerado",
 ]
 BALANCE_HEADERS = ["Conta", "Valor"]
+WORK_HEADERS = [
+    "ID", "Competência", "Obra / Histórico", "Locador / Cliente",
+    "Valor Cobrado (R$)", "Valor Recebido (R$)", "Prestador",
+    "PIX do Prestador", "Custo Previsto (R$)", "Valor Pago (R$)",
+    "Status", "Observação", "Criado Em", "Atualizado Em",
+]
 PARAM_HEADERS = ["Chave", "Valor", "Descrição", "Atualizado Em"]
 QUOTE_HEADERS = ["Data", "Moeda", "Compra", "Venda", "Fonte", "Consultado Em"]
 CLOSE_HEADERS = [
@@ -307,6 +316,43 @@ def ensure_balance_rows(ws) -> None:
         ws.append_rows(missing, value_input_option="USER_ENTERED")
 
 
+def ensure_initial_work_rows(ws) -> None:
+    if load_records(ws):
+        return
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+    initial = [
+        ("Reparo Cruzeiro", 4800.0, 3200.0, 3200.0, "Concluída"),
+        ("SQS 211 (Mauvi)", 1850.0, 1450.0, 725.0, "Parcial"),
+        ("Reparo Anderson Cruzeiro", 1850.0, 1200.0, 600.0, "Parcial"),
+    ]
+    append_dicts(ws, WORK_HEADERS, [{
+        "ID": new_id("OBR"),
+        "Competência": "09/2026",
+        "Obra / Histórico": description,
+        "Locador / Cliente": "",
+        "Valor Cobrado (R$)": format_brl(charged),
+        "Valor Recebido (R$)": "",
+        "Prestador": "Solange",
+        "PIX do Prestador": "",
+        "Custo Previsto (R$)": format_brl(cost),
+        "Valor Pago (R$)": format_brl(paid),
+        "Status": status,
+        "Observação": "Preencher cliente e chave PIX do prestador.",
+        "Criado Em": now,
+        "Atualizado Em": now,
+    } for description, charged, cost, paid, status in initial])
+
+
+def sync_construction_balance(ws, amount: float) -> None:
+    records = load_records(ws)
+    for row_number, record in enumerate(records, start=2):
+        if is_pending_construction_adjustment_balance(record.get("Conta")):
+            if abs(parse_money(record.get("Valor")) - amount) > 0.005:
+                update_row(ws, row_number, {"Conta": "Acertos de obras pendentes", "Valor": format_brl(amount)})
+            return
+    append_dicts(ws, BALANCE_HEADERS, [{"Conta": "Acertos de obras pendentes", "Valor": format_brl(amount)}])
+
+
 def display_money_table(frame: pd.DataFrame, columns: list[str]) -> None:
     view = frame.copy()
     for column in columns:
@@ -329,6 +375,7 @@ try:
         ["Série ID", "Descrição", "Tipo", "Categoria", "Início", "Ocorrências", "Intervalo em meses", "Valor", "Criado Em"],
         500,
     )
+    ws_works = worksheet("Obras", WORK_HEADERS, 1000)
 except Exception as exc:
     st.error(f"Não foi possível abrir a base Financeiro_MRC: {exc}")
     st.stop()
@@ -337,6 +384,10 @@ records = load_records(ws_forecast)
 launches = normalize_launches(records)
 history_launches = normalize_launches(load_records(ws_history))
 ensure_balance_rows(ws_balances)
+ensure_initial_work_rows(ws_works)
+works = normalize_works(load_records(ws_works))
+works_payable = construction_payables(works)
+sync_construction_balance(ws_balances, works_payable)
 balances_df, brl_balance = account_balances(ws_balances)
 parameters = load_parameters(ws_parameters)
 today = date.today()
@@ -348,13 +399,17 @@ interest_reserve_signed = float(
 ) if not balances_df.empty else 0.0
 interest_reserve = abs(interest_reserve_signed)
 brl_balance -= interest_reserve_signed
-distribution_liabilities = float(
+stored_distribution_liabilities = float(
     balances_df.loc[
         balances_df["Conta"].map(is_distribution_liability_balance),
         "Valor Num",
     ].sum()
 ) if not balances_df.empty else 0.0
-brl_balance -= distribution_liabilities
+stored_works_payable = float(
+    balances_df.loc[balances_df["Conta"].map(is_pending_construction_adjustment_balance), "Valor Num"].sum()
+) if not balances_df.empty else 0.0
+brl_balance -= stored_distribution_liabilities
+distribution_liabilities = stored_distribution_liabilities - stored_works_payable + works_payable
 automatic_quote, automatic_quote_date = ptax_sale(today)
 saved_quote = float(parameters["ultima_cotacao_usd"])
 manual_quote = float(parameters["cotacao_manual_usd"])
@@ -380,8 +435,8 @@ with st.sidebar:
 st.title("💰 Previsão financeira — MRC Imóveis")
 st.caption("O saldo bancário representa o que já aconteceu. Somente receitas e despesas ainda abertas alteram a projeção futura.")
 
-tab_summary, tab_pending, tab_launch, tab_forecast, tab_balances, tab_history, tab_settings = st.tabs(
-    ["Resumo", "Pendências", "Novo lançamento", "Forecast", "Saldos", "Histórico", "Configurações"]
+tab_summary, tab_pending, tab_launch, tab_forecast, tab_works, tab_balances, tab_history, tab_settings = st.tabs(
+    ["Resumo", "Pendências", "Novo lançamento", "Forecast", "Obras", "Saldos", "Histórico", "Configurações"]
 )
 
 monthly = monthly_forecast(launches, selected_year)
@@ -713,6 +768,171 @@ with tab_forecast:
             st.success(f"{len(affected)} mês(es) atualizado(s).")
             st.rerun()
 
+with tab_works:
+    st.subheader("Controle de obras")
+    st.caption(
+        "O valor que falta pagar aos prestadores atualiza automaticamente o saldo "
+        "Acertos de obras pendentes e reduz a sobra disponível para distribuição."
+    )
+    st.info(
+        "Os pagamentos informados aqui não alteram o saldo bancário. Depois de pagar o prestador, "
+        "atualize manualmente o banco na aba Saldos."
+    )
+
+    work_monthly = monthly_work_summary(works, selected_year)
+    default_work_month = today.month if selected_year == today.year else 1
+    work_month = st.selectbox(
+        "Mês das obras",
+        list(MESES),
+        index=default_work_month - 1,
+        format_func=lambda item: MESES[item],
+        key="work_month",
+    )
+    work_summary = work_monthly.iloc[work_month - 1]
+    w1, w2, w3, w4 = st.columns(4)
+    w1.metric("Valor cobrado", format_brl(work_summary["cobrado"]))
+    w2.metric("Custo previsto", format_brl(work_summary["custo_previsto"]))
+    w3.metric("Lucro previsto", format_brl(work_summary["lucro_previsto"]))
+    w4.metric("Falta pagar", format_brl(work_summary["falta_pagar"]))
+
+    selected_works = works[
+        works["competencia"].notna()
+        & (works["competencia"].dt.year == selected_year)
+        & (works["competencia"].dt.month == work_month)
+    ].copy() if not works.empty else works.copy()
+
+    st.subheader("Obras do mês")
+    if selected_works.empty:
+        st.info("Nenhuma obra cadastrada neste mês.")
+    else:
+        selected_works = selected_works.sort_values(["status", "obra"]).reset_index(drop=True)
+        works_editor_source = pd.DataFrame({
+            "Obra": selected_works["obra"],
+            "Cliente": selected_works["cliente"],
+            "Valor cobrado": selected_works["cobrado"].astype(float),
+            "Valor recebido": selected_works["recebido"].astype(float),
+            "A receber": selected_works["a_receber"].astype(float),
+            "Prestador": selected_works["prestador"],
+            "PIX do prestador": selected_works["pix"],
+            "Custo previsto": selected_works["custo_previsto"].astype(float),
+            "Valor pago": selected_works["pago"].astype(float),
+            "Falta pagar": selected_works["falta_pagar"].astype(float),
+            "Lucro previsto": selected_works["lucro_previsto"].astype(float),
+            "Status": selected_works["status"],
+            "Observação": selected_works["observacao"],
+            "sheet_row": selected_works["sheet_row"].astype(int),
+        })
+        edited_works = st.data_editor(
+            works_editor_source,
+            use_container_width=True,
+            hide_index=True,
+            disabled=["A receber", "Falta pagar", "Lucro previsto", "sheet_row"],
+            column_config={
+                "Valor cobrado": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
+                "Valor recebido": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
+                "A receber": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Custo previsto": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
+                "Valor pago": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
+                "Falta pagar": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Lucro previsto": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Status": st.column_config.SelectboxColumn(
+                    options=["Em andamento", "Parcial", "Concluída", "Cancelada"],
+                    required=True,
+                ),
+                "sheet_row": None,
+            },
+            key=f"works_editor_{selected_year}_{work_month}",
+        )
+        if st.button("Salvar alterações das obras", type="primary"):
+            now = datetime.now().strftime("%d/%m/%Y %H:%M")
+            for _, row in edited_works.iterrows():
+                update_row(ws_works, int(row["sheet_row"]), {
+                    "Obra / Histórico": str(row["Obra"]).strip(),
+                    "Locador / Cliente": str(row["Cliente"]).strip(),
+                    "Valor Cobrado (R$)": format_brl(float(row["Valor cobrado"])),
+                    "Valor Recebido (R$)": format_brl(float(row["Valor recebido"])),
+                    "Prestador": str(row["Prestador"]).strip(),
+                    "PIX do Prestador": str(row["PIX do prestador"]).strip(),
+                    "Custo Previsto (R$)": format_brl(float(row["Custo previsto"])),
+                    "Valor Pago (R$)": format_brl(float(row["Valor pago"])),
+                    "Status": str(row["Status"]),
+                    "Observação": str(row["Observação"]).strip(),
+                    "Atualizado Em": now,
+                })
+            refreshed_works = normalize_works(load_records(ws_works))
+            sync_construction_balance(ws_balances, construction_payables(refreshed_works))
+            st.success("Obras atualizadas e saldo de acertos recalculado.")
+            st.warning("Se houve pagamento ao prestador, atualize manualmente o saldo bancário na aba Saldos.")
+            st.cache_data.clear()
+            st.rerun()
+
+    with st.expander("Cadastrar nova obra"):
+        with st.form("new_work", clear_on_submit=True):
+            a, b, c = st.columns(3)
+            work_description = a.text_input("Obra / histórico")
+            work_client = b.text_input("Locador / cliente")
+            work_competence = c.date_input(
+                "Competência",
+                value=date(selected_year, work_month, 1),
+                format="DD/MM/YYYY",
+            )
+            d, e, f = st.columns(3)
+            work_charged = d.number_input("Valor cobrado", min_value=0.0, step=100.0)
+            work_received = e.number_input("Valor recebido", min_value=0.0, step=100.0)
+            work_cost = f.number_input("Custo previsto do prestador", min_value=0.0, step=100.0)
+            g, h, i = st.columns(3)
+            work_paid = g.number_input("Valor já pago", min_value=0.0, step=100.0)
+            work_provider = h.text_input("Prestador")
+            work_pix = i.text_input("PIX do prestador")
+            work_notes = st.text_area("Observações", key="new_work_notes")
+            save_work = st.form_submit_button("Salvar nova obra", type="primary")
+        if save_work:
+            if not work_description.strip():
+                st.error("Informe a obra ou histórico.")
+            elif work_charged <= 0 and work_cost <= 0:
+                st.error("Informe o valor cobrado ou o custo previsto.")
+            else:
+                status = "Concluída" if work_cost > 0 and work_paid >= work_cost else (
+                    "Parcial" if work_paid > 0 or work_received > 0 else "Em andamento"
+                )
+                now = datetime.now().strftime("%d/%m/%Y %H:%M")
+                append_dicts(ws_works, WORK_HEADERS, [{
+                    "ID": new_id("OBR"),
+                    "Competência": work_competence.strftime("%m/%Y"),
+                    "Obra / Histórico": work_description.strip(),
+                    "Locador / Cliente": work_client.strip(),
+                    "Valor Cobrado (R$)": format_brl(work_charged),
+                    "Valor Recebido (R$)": format_brl(work_received),
+                    "Prestador": work_provider.strip(),
+                    "PIX do Prestador": work_pix.strip(),
+                    "Custo Previsto (R$)": format_brl(work_cost),
+                    "Valor Pago (R$)": format_brl(work_paid),
+                    "Status": status,
+                    "Observação": work_notes.strip(),
+                    "Criado Em": now,
+                    "Atualizado Em": now,
+                }])
+                refreshed_works = normalize_works(load_records(ws_works))
+                sync_construction_balance(ws_balances, construction_payables(refreshed_works))
+                st.success("Obra cadastrada e saldo de acertos atualizado.")
+                if work_paid > 0:
+                    st.warning("Atualize manualmente o saldo bancário na aba Saldos.")
+                st.cache_data.clear()
+                st.rerun()
+
+    st.subheader(f"Resultado mensal das obras em {selected_year}")
+    work_history_view = work_monthly[[
+        "mes", "cobrado", "recebido", "custo_previsto", "pago", "falta_pagar", "lucro_previsto"
+    ]].rename(columns={
+        "mes": "Mês", "cobrado": "Valor cobrado", "recebido": "Valor recebido",
+        "custo_previsto": "Custo previsto", "pago": "Valor pago",
+        "falta_pagar": "Falta pagar", "lucro_previsto": "Lucro previsto",
+    })
+    display_money_table(
+        work_history_view,
+        ["Valor cobrado", "Valor recebido", "Custo previsto", "Valor pago", "Falta pagar", "Lucro previsto"],
+    )
+
 with tab_balances:
     st.subheader("Reserva em dólar")
     st.caption("Informe o saldo em USD. O equivalente em reais já compõe os saldos atualizados e não entra novamente no forecast.")
@@ -796,21 +1016,26 @@ with tab_balances:
     if interest_reserve:
         st.info(f"Reserva protegida para juros de cauções: {format_brl(interest_reserve)}.")
     liability_labels = (
-        (is_customer_pass_through_balance, "Superlógica — repasses a clientes"),
-        (is_pending_construction_adjustment_balance, "Acertos de obras pendentes"),
-        (is_advance_customer_payment_balance, "Boletos pagos adiantados"),
+        (is_customer_pass_through_balance, "Superlógica — repasses a clientes", None),
+        (is_pending_construction_adjustment_balance, "Acertos de obras pendentes", works_payable),
+        (is_advance_customer_payment_balance, "Boletos pagos adiantados", None),
     )
-    for checker, label in liability_labels:
-        amount = float(balances_df.loc[balances_df["Conta"].map(checker), "Valor Num"].sum())
+    for checker, label, automatic_amount in liability_labels:
+        amount = automatic_amount if automatic_amount is not None else float(
+            balances_df.loc[balances_df["Conta"].map(checker), "Valor Num"].sum()
+        )
         if amount:
             direction = "reduz" if amount > 0 else "aumenta"
             st.info(f"{label}: {format_brl(amount)}. Este valor {direction} a sobra disponível para distribuição.")
-    edit = balances_df[BALANCE_HEADERS].copy()
+    st.caption("Acertos de obras pendentes é calculado na aba Obras e não pode ser alterado manualmente aqui.")
+    edit = balances_df[~balances_df["Conta"].map(is_pending_construction_adjustment_balance)][BALANCE_HEADERS].copy()
     edited = st.data_editor(edit, use_container_width=True, hide_index=True, num_rows="dynamic")
     if st.button("Salvar todos os saldos", type="primary"):
         now = datetime.now().strftime("%d/%m/%Y às %H:%M")
         ws_balances.clear()
-        ws_balances.update("A1", [BALANCE_HEADERS] + edited.fillna("").values.tolist(), value_input_option="USER_ENTERED")
+        saved_balances = edited.fillna("").values.tolist()
+        saved_balances.append(["Acertos de obras pendentes", format_brl(works_payable)])
+        ws_balances.update("A1", [BALANCE_HEADERS] + saved_balances, value_input_option="USER_ENTERED")
         st.success(f"Saldos atualizados em {now}.")
         st.cache_data.clear()
         st.rerun()
@@ -923,3 +1148,4 @@ with tab_settings:
     d1.metric("Total distribuível", format_brl(distributable))
     d2.metric("Sócio 1", format_brl(max(distributable, 0) * parameters["percentual_socio_1"] / 100))
     d3.metric("Sócio 2", format_brl(max(distributable, 0) * parameters["percentual_socio_2"] / 100))
+
