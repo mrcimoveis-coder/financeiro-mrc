@@ -48,6 +48,7 @@ from finance_core import (
     suggest_next_year_forecast,
     variance,
     withdrawal_summary,
+    works_for_month,
 )
 
 
@@ -1584,28 +1585,34 @@ with tab_works:
         key="work_month",
     )
     work_summary = work_monthly.iloc[work_month - 1]
+    selected_works = works_for_month(works, selected_year, work_month)
+    displayed_payable = construction_payables(selected_works)
     w1, w2, w3, w4 = st.columns(4)
     w1.metric("Valor cobrado", format_brl(work_summary["cobrado"]))
     w2.metric("Custo previsto", format_brl(work_summary["custo_previsto"]))
     w3.metric("Lucro previsto", format_brl(work_summary["lucro_previsto"]))
-    w4.metric("Falta pagar", format_brl(work_summary["falta_pagar"]))
+    w4.metric("Falta pagar (inclui anteriores)", format_brl(displayed_payable))
 
-    selected_works = works[
-        works["competencia"].notna()
-        & (works["competencia"].dt.year == selected_year)
-        & (works["competencia"].dt.month == work_month)
-    ].copy() if not works.empty else works.copy()
-
-    st.subheader("Obras do mês")
+    st.subheader("Obras do mês e pendências anteriores")
+    st.caption(
+        "As obras de meses anteriores permanecem aqui enquanto houver saldo a pagar ao prestador. "
+        "A competência original e o histórico mensal não são alterados."
+    )
     if selected_works.empty:
-        st.info("Nenhuma obra cadastrada neste mês.")
+        st.info("Nenhuma obra cadastrada neste mês e nenhuma pendência anterior.")
     else:
-        selected_works = selected_works.sort_values(["status", "obra"]).reset_index(drop=True)
+        selected_works["pendencia_anterior"] = selected_works["competencia"] < pd.Timestamp(
+            selected_year, work_month, 1
+        )
+        selected_works = selected_works.sort_values(
+            ["pendencia_anterior", "competencia", "status", "obra"],
+            ascending=[False, True, True, True],
+        ).reset_index(drop=True)
         works_editor_source = pd.DataFrame({
+            "Competência original": selected_works["competencia"].dt.strftime("%m/%Y"),
             "Obra": selected_works["obra"],
             "Cliente": selected_works["cliente"],
             "Valor cobrado": selected_works["cobrado"].astype(float),
-            "Valor recebido": selected_works["recebido"].astype(float),
             "A receber": selected_works["a_receber"].astype(float),
             "Prestador": selected_works["prestador"],
             "PIX do prestador": selected_works["pix"],
@@ -1621,10 +1628,9 @@ with tab_works:
             works_editor_source,
             use_container_width=True,
             hide_index=True,
-            disabled=["A receber", "Falta pagar", "Lucro previsto", "sheet_row"],
+            disabled=["Competência original", "A receber", "Falta pagar", "Lucro previsto", "sheet_row"],
             column_config={
                 "Valor cobrado": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
-                "Valor recebido": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
                 "A receber": st.column_config.NumberColumn(format="R$ %.2f"),
                 "Custo previsto": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
                 "Valor pago": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
@@ -1645,7 +1651,6 @@ with tab_works:
                     "Obra / Histórico": str(row["Obra"]).strip(),
                     "Locador / Cliente": str(row["Cliente"]).strip(),
                     "Valor Cobrado (R$)": format_brl(float(row["Valor cobrado"])),
-                    "Valor Recebido (R$)": format_brl(float(row["Valor recebido"])),
                     "Prestador": str(row["Prestador"]).strip(),
                     "PIX do Prestador": str(row["PIX do prestador"]).strip(),
                     "Custo Previsto (R$)": format_brl(float(row["Custo previsto"])),
@@ -2109,4 +2114,3 @@ with tab_settings:
     d1.metric("Total distribuível", format_brl(distributable))
     d2.metric("Sócio 1", format_brl(max(distributable, 0) * parameters["percentual_socio_1"] / 100))
     d3.metric("Sócio 2", format_brl(max(distributable, 0) * parameters["percentual_socio_2"] / 100))
-
