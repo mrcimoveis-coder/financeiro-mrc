@@ -90,6 +90,13 @@ WITHDRAWAL_HEADERS = [
     "Competência", "Pró-labore (R$)", "Retirada de Lucros (R$)",
     "Retirada Adicional (R$)", "Observação", "Atualizado Em",
 ]
+CORRECTION_LOG_HEADERS = [
+    "Corrigido Em", "Usuário", "Origem", "Linha", "ID", "Tipo",
+    "Lançamento", "Antes", "Depois", "Motivo",
+]
+DELETED_LAUNCH_HEADERS = [
+    "Excluído Em", "Usuário", "Origem", "Linha Original", "Motivo", *MAIN_HEADERS,
+]
 
 STABILIZED_RENT_GOAL_TYPE = "Renda mensal estabilizada (manual)"
 MANUAL_GOAL_TYPES = {"Manual", STABILIZED_RENT_GOAL_TYPE}
@@ -607,6 +614,8 @@ try:
     ws_forecast_review = worksheet("Revisao_Forecast", FORECAST_REVIEW_HEADERS, 2000)
     ws_goals = worksheet("Metas_Anuais", GOAL_HEADERS, 500)
     ws_withdrawals = worksheet("Retiradas_Socios", WITHDRAWAL_HEADERS, 1000)
+    ws_correction_log = worksheet("Log_Correcoes", CORRECTION_LOG_HEADERS, 1000)
+    ws_deleted_launches = worksheet("Lancamentos_Excluidos", DELETED_LAUNCH_HEADERS, 1000)
 except Exception as exc:
     st.error(f"Não foi possível abrir a base Financeiro_MRC: {exc}")
     st.stop()
@@ -621,6 +630,8 @@ standardize_monthly_rent_labels(ws_recurrences, "Descrição")
 records = load_records(ws_forecast)
 launches = normalize_launches(records)
 history_launches = normalize_launches(load_records(ws_history))
+launches["origem"] = "Forecast"
+history_launches["origem"] = "Histórico"
 ensure_balance_rows(ws_balances)
 ensure_initial_work_rows(ws_works)
 ensure_withdrawal_year(ws_withdrawals, 2026)
@@ -2088,6 +2099,188 @@ with tab_history:
             "competencia", "tipo", "categoria", "historico", "previsto", "realizado", "pendente", "status", "conta"
         ]].sort_values(["competencia", "tipo", "historico"])
         display_money_table(tracking_view, ["previsto", "realizado", "pendente"])
+
+        correctable = tracked[tracked["realizado"] > 0].copy()
+        if not correctable.empty:
+            st.subheader("Corrigir receita ou despesa já baixada")
+            st.caption(
+                "A correção atualiza o histórico e o resultado realizado, mas não movimenta o saldo bancário. "
+                "Use Reabrir somente quando a baixa tiver sido feita por engano."
+            )
+            correctable = correctable.sort_values(
+                ["competencia", "tipo", "historico", "sheet_row"], kind="stable"
+            ).reset_index(drop=True)
+            correction_index = st.selectbox(
+                "Lançamento realizado",
+                options=list(range(len(correctable))),
+                format_func=lambda index: (
+                    f"{correctable.iloc[index]['competencia'].strftime('%m/%Y')} · "
+                    f"{correctable.iloc[index]['tipo']} · {correctable.iloc[index]['historico']} · "
+                    f"{format_brl(float(correctable.iloc[index]['realizado']))}"
+                ),
+                key=f"correction_record_{selected_year}",
+            )
+            correction = correctable.iloc[int(correction_index)]
+            current_nature = clean_editor_text(correction.get("natureza"), "Operacional")
+            correction_natures = list(NATURE_OPTIONS)
+            if current_nature not in correction_natures:
+                correction_natures.append(current_nature)
+            settlement_value = correction.get("data_quitacao")
+            if pd.isna(settlement_value):
+                settlement_value = correction.get("competencia")
+            settlement_default = settlement_value.date() if pd.notna(settlement_value) else date.today()
+
+            correction_source_key = normalize_label(correction["origem"]).replace(" ", "_")
+            with st.form(
+                f"correct_realized_{selected_year}_{correction_source_key}_{int(correction['sheet_row'])}"
+            ):
+                c1, c2 = st.columns(2)
+                corrected_type = c1.selectbox(
+                    "Tipo", ["Receita", "Despesa"],
+                    index=0 if correction["tipo"] == "Receita" else 1,
+                )
+                corrected_value = c2.number_input(
+                    "Valor realizado correto",
+                    min_value=0.0,
+                    value=float(correction["realizado"]),
+                    step=100.0,
+                    format="%.2f",
+                )
+                c3, c4 = st.columns(2)
+                corrected_description = c3.text_input("Lançamento", value=str(correction["historico"]))
+                corrected_category = c4.text_input("Categoria", value=str(correction["categoria"]))
+                c5, c6 = st.columns(2)
+                corrected_nature = c5.selectbox(
+                    "Natureza",
+                    correction_natures,
+                    index=correction_natures.index(current_nature),
+                )
+                corrected_date = c6.date_input(
+                    "Data da quitação/recebimento",
+                    value=settlement_default,
+                    format="DD/MM/YYYY",
+                )
+                reopen_launch = st.checkbox(
+                    "Reabrir este lançamento como pendente",
+                    help="O saldo ainda não realizado voltará a afetar a projeção.",
+                )
+                delete_launch = st.checkbox(
+                    "Excluir este lançamento incorreto",
+                    help=(
+                        "Ele deixará de aparecer e de afetar os cálculos. Uma cópia completa será guardada "
+                        "em Lancamentos_Excluidos para possível recuperação."
+                    ),
+                )
+                correction_reason = st.text_area(
+                    "Motivo da correção",
+                    placeholder="Exemplo: valor informado incorretamente na baixa.",
+                )
+                save_correction = st.form_submit_button("Salvar correção ou exclusão", type="primary")
+
+            if save_correction:
+                if not correction_reason.strip():
+                    st.error("Informe o motivo da correção ou exclusão para manter a rastreabilidade.")
+                elif delete_launch:
+                    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+                    target_ws = ws_history if correction["origem"] == "Histórico" else ws_forecast
+                    source_records = load_records(target_ws)
+                    source_index = int(correction["sheet_row"]) - 2
+                    if not 0 <= source_index < len(source_records):
+                        st.error("O lançamento mudou de posição. Recarregue a página e tente novamente.")
+                    else:
+                        source_record = dict(source_records[source_index])
+                        archived_record = {
+                            header: source_record.get(header, "") for header in MAIN_HEADERS
+                        }
+                        archived_record.update({
+                            "Excluído Em": now,
+                            "Usuário": st.session_state.get("usuario_fin", ""),
+                            "Origem": correction["origem"],
+                            "Linha Original": int(correction["sheet_row"]),
+                            "Motivo": correction_reason.strip(),
+                        })
+                        append_dicts(
+                            ws_deleted_launches,
+                            DELETED_LAUNCH_HEADERS,
+                            [archived_record],
+                        )
+                        delete_sheet_rows(target_ws, [int(correction["sheet_row"])])
+                        append_dicts(ws_correction_log, CORRECTION_LOG_HEADERS, [{
+                            "Corrigido Em": now,
+                            "Usuário": st.session_state.get("usuario_fin", ""),
+                            "Origem": correction["origem"],
+                            "Linha": int(correction["sheet_row"]),
+                            "ID": correction["id"],
+                            "Tipo": correction["tipo"],
+                            "Lançamento": correction["historico"],
+                            "Antes": json.dumps(source_record, ensure_ascii=False),
+                            "Depois": json.dumps({
+                                "Excluído": True,
+                                "Arquivo": "Lancamentos_Excluidos",
+                            }, ensure_ascii=False),
+                            "Motivo": correction_reason.strip(),
+                        }])
+                        st.success(
+                            "Lançamento excluído dos cálculos e guardado em Lancamentos_Excluidos."
+                        )
+                        st.rerun()
+                elif not corrected_description.strip():
+                    st.error("Informe o nome do lançamento.")
+                elif corrected_value <= 0 and not reopen_launch:
+                    st.error("Para zerar um valor realizado, marque a opção de reabrir o lançamento.")
+                else:
+                    corrected_status = (
+                        "Parcial" if reopen_launch and corrected_value > 0
+                        else "Previsto" if reopen_launch
+                        else str(correction["status"])
+                    )
+                    before = {
+                        "Tipo": str(correction["tipo"]),
+                        "Lançamento": str(correction["historico"]),
+                        "Categoria": str(correction["categoria"]),
+                        "Natureza": current_nature,
+                        "Valor realizado": float(correction["realizado"]),
+                        "Data": settlement_default.strftime("%d/%m/%Y"),
+                        "Status": str(correction["status"]),
+                    }
+                    after = {
+                        "Tipo": corrected_type,
+                        "Lançamento": corrected_description.strip(),
+                        "Categoria": corrected_category.strip() or "OUTRO",
+                        "Natureza": corrected_nature,
+                        "Valor realizado": float(corrected_value),
+                        "Data": corrected_date.strftime("%d/%m/%Y"),
+                        "Status": corrected_status,
+                    }
+                    if before == after:
+                        st.info("Nenhuma alteração foi identificada.")
+                    else:
+                        now = datetime.now().strftime("%d/%m/%Y %H:%M")
+                        target_ws = ws_history if correction["origem"] == "Histórico" else ws_forecast
+                        update_row(target_ws, int(correction["sheet_row"]), {
+                            "Tipo de Operação": after["Tipo"],
+                            "Histórico": after["Lançamento"],
+                            "Categoria": after["Categoria"],
+                            "Natureza": after["Natureza"],
+                            "Valor Realizado (R$)": format_brl(after["Valor realizado"]),
+                            "Data Quitação": after["Data"],
+                            "Status": after["Status"],
+                            "Atualizado Em": now,
+                        })
+                        append_dicts(ws_correction_log, CORRECTION_LOG_HEADERS, [{
+                            "Corrigido Em": now,
+                            "Usuário": st.session_state.get("usuario_fin", ""),
+                            "Origem": correction["origem"],
+                            "Linha": int(correction["sheet_row"]),
+                            "ID": correction["id"],
+                            "Tipo": after["Tipo"],
+                            "Lançamento": after["Lançamento"],
+                            "Antes": json.dumps(before, ensure_ascii=False),
+                            "Depois": json.dumps(after, ensure_ascii=False),
+                            "Motivo": correction_reason.strip(),
+                        }])
+                        st.success("Lançamento corrigido e registrado no histórico de alterações.")
+                        st.rerun()
 
     st.subheader("Diferenças de lançamentos encerrados")
     history = variance(combined_history)
