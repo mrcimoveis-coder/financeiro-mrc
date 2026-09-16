@@ -319,6 +319,7 @@ def normalize_launches(records: list[dict], default_year: int = 2026) -> pd.Data
             continue
         competence = month_start(record.get("Competência") or record.get("Mês"), default_year)
         due = parse_date(record.get("Vencimento"), default_year)
+        settlement_date = parse_date(record.get("Data Quitação"), default_year)
         if pd.isna(due) and pd.notna(competence):
             due = competence
                     
@@ -344,6 +345,7 @@ def normalize_launches(records: list[dict], default_year: int = 2026) -> pd.Data
                 "id": str(record.get("ID") or "").strip(),
                 "competencia": competence,
                 "vencimento": due,
+                "data_quitacao": settlement_date,
                 "tipo": launch_type,
                 "categoria": str(record.get("Categoria") or "OUTRO").strip(),
                 "envolvido": str(record.get("Corretor / Envolvido") or "").strip(),
