@@ -1162,16 +1162,178 @@ with tab_forecast:
         st.info("O forecast deste ano ainda não foi carregado.")
     else:
         year_series["mes_num"] = year_series["competencia"].dt.month
-        matrix = year_series.pivot_table(
-            index=["tipo", "historico"], columns="mes_num", values="pendente", aggfunc="sum", fill_value=0.0
+        year_series["_matrix_key"] = year_series.apply(
+            lambda row: (
+                f"SERIE:{row['serie_id']}"
+                if str(row["serie_id"]).strip()
+                else f"REGISTRO:{row['id'] or int(row['sheet_row'])}"
+            ),
+            axis=1,
+        )
+        matrix_details = (
+            year_series.sort_values(["_matrix_key", "competencia", "sheet_row"])
+            .groupby("_matrix_key", as_index=False)
+            .first()[["_matrix_key", "tipo", "historico", "categoria", "envolvido"]]
+        )
+        matrix_values = year_series.pivot_table(
+            index="_matrix_key", columns="mes_num", values="pendente", aggfunc="sum", fill_value=0.0
         ).reset_index()
+        matrix = matrix_details.merge(matrix_values, on="_matrix_key", how="left")
         for month_number in range(1, 13):
             if month_number not in matrix:
                 matrix[month_number] = 0.0
-        matrix = matrix[["tipo", "historico", *range(1, 13)]].rename(
-            columns={"tipo": "Tipo", "historico": "Lançamento", **MESES}
+        matrix = matrix[
+            ["_matrix_key", "tipo", "historico", "categoria", "envolvido", *range(1, 13)]
+        ].rename(
+            columns={
+                "tipo": "Tipo",
+                "historico": "Lançamento",
+                "categoria": "Categoria",
+                "envolvido": "Envolvido",
+                **MESES,
+            }
         )
-        display_money_table(matrix, list(MESES.values()))
+        matrix_editor_key = f"annual_matrix_editor_{selected_year}"
+        edited_matrix = st.data_editor(
+            matrix,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            disabled=["_matrix_key"],
+            column_config={
+                "_matrix_key": None,
+                "Tipo": st.column_config.SelectboxColumn(
+                    options=["Receita", "Despesa"], required=True,
+                ),
+                **{
+                    month_name: st.column_config.NumberColumn(
+                        min_value=0.0,
+                        step=100.0,
+                        format="R$ %.2f",
+                    )
+                    for month_name in MESES.values()
+                },
+            },
+            key=matrix_editor_key,
+        )
+        st.caption(
+            "Edite o nome, tipo, categoria ou envolvido para corrigir a série inteira. "
+            "A alteração em um mês afeta somente aquele mês. Valores iguais a zero deixam de afetar o forecast."
+        )
+        if st.button("Salvar alterações da matriz", type="primary"):
+            original_by_key = matrix.set_index("_matrix_key")
+            edited_by_key = edited_matrix.set_index("_matrix_key")
+            row_updates: dict[int, dict] = {}
+            new_rows: list[dict] = []
+            warnings: list[str] = []
+            changed_cells = 0
+            now = datetime.now().strftime("%d/%m/%Y %H:%M")
+            generated_series_ids: dict[str, str] = {}
+
+            def queue_update(sheet_row: int, updates: dict) -> None:
+                row_updates.setdefault(int(sheet_row), {}).update(updates)
+
+            for matrix_key, edited_row in edited_by_key.iterrows():
+                original_row = original_by_key.loc[matrix_key]
+                source_rows = year_series[year_series["_matrix_key"] == matrix_key].copy()
+                if source_rows.empty:
+                    continue
+
+                edited_type = clean_editor_text(edited_row.get("Tipo"), "Despesa")
+                edited_description = clean_editor_text(edited_row.get("Lançamento"))
+                edited_category = clean_editor_text(edited_row.get("Categoria"), "OUTRO")
+                edited_involved = clean_editor_text(edited_row.get("Envolvido"))
+                if not edited_description:
+                    warnings.append("Há uma linha sem nome de lançamento; ela não foi alterada.")
+                    continue
+
+                common_updates = {}
+                if edited_type != clean_editor_text(original_row.get("Tipo"), "Despesa"):
+                    common_updates["Tipo de Operação"] = edited_type
+                if edited_description != clean_editor_text(original_row.get("Lançamento")):
+                    common_updates["Histórico"] = edited_description
+                if edited_category != clean_editor_text(original_row.get("Categoria"), "OUTRO"):
+                    common_updates["Categoria"] = edited_category
+                if edited_involved != clean_editor_text(original_row.get("Envolvido")):
+                    common_updates["Corretor / Envolvido"] = edited_involved
+                if common_updates:
+                    common_updates["Atualizado Em"] = now
+                    for sheet_row in source_rows["sheet_row"]:
+                        queue_update(int(sheet_row), common_updates)
+                    changed_cells += len(common_updates) - 1
+
+                for month_number, month_name in MESES.items():
+                    original_value = parse_money(original_row.get(month_name))
+                    edited_value = max(parse_money(edited_row.get(month_name)), 0.0)
+                    if abs(edited_value - original_value) <= 0.005:
+                        continue
+                    month_rows = source_rows[source_rows["mes_num"] == month_number]
+                    if len(month_rows) > 1:
+                        warnings.append(
+                            f"{edited_description} em {month_name}: existem registros duplicados; "
+                            "o valor não foi alterado."
+                        )
+                        continue
+                    if len(month_rows) == 1:
+                        launch_row = month_rows.iloc[0]
+                        planned_value = float(launch_row["realizado"]) + edited_value
+                        queue_update(
+                            int(launch_row["sheet_row"]),
+                            {
+                                "Valor (R$)": format_brl(planned_value),
+                                "Valor Previsto (R$)": format_brl(planned_value),
+                                "Atualizado Em": now,
+                            },
+                        )
+                    elif edited_value > 0:
+                        base_row = source_rows.iloc[0]
+                        base_index = int(base_row["sheet_row"]) - 2
+                        base_record = dict(records[base_index]) if 0 <= base_index < len(records) else {}
+                        series_id = clean_editor_text(base_row.get("serie_id"))
+                        if not series_id:
+                            series_id = generated_series_ids.setdefault(str(matrix_key), new_id("SER"))
+                            for sheet_row in source_rows["sheet_row"]:
+                                queue_update(int(sheet_row), {"Série ID": series_id, "Atualizado Em": now})
+                        due_values = source_rows["vencimento"].dropna()
+                        due_day = int(due_values.iloc[0].day) if not due_values.empty else 1
+                        first_day = pd.Timestamp(selected_year, month_number, 1)
+                        due = date(selected_year, month_number, min(due_day, first_day.days_in_month))
+                        new_row = {header: base_record.get(header, "") for header in MAIN_HEADERS}
+                        new_row.update({
+                            "Mês": MESES[month_number],
+                            "Tipo de Operação": edited_type,
+                            "Categoria": edited_category,
+                            "Corretor / Envolvido": edited_involved,
+                            "Histórico": edited_description,
+                            "Valor (R$)": format_brl(edited_value),
+                            "Status": "Previsto",
+                            "ID": new_id(),
+                            "Competência": f"{month_number:02d}/{selected_year}",
+                            "Vencimento": due.strftime("%d/%m/%Y"),
+                            "Valor Previsto (R$)": format_brl(edited_value),
+                            "Valor Realizado (R$)": "",
+                            "Data Quitação": "",
+                            "Série ID": series_id,
+                            "Criado Em": now,
+                            "Atualizado Em": now,
+                            "Moeda": "BRL",
+                            "Valor na Moeda": "",
+                            "Cotação Utilizada": "",
+                            "Percentual Considerado": 100,
+                        })
+                        new_rows.append(new_row)
+                    changed_cells += 1
+
+            batch_update_rows(ws_forecast, list(row_updates.items()))
+            append_dicts(ws_forecast, MAIN_HEADERS, new_rows)
+            if warnings:
+                st.warning(" ".join(dict.fromkeys(warnings)))
+            if row_updates or new_rows:
+                st.session_state.pop(matrix_editor_key, None)
+                st.success(f"Matriz atualizada: {changed_cells} alteração(ões) salva(s).")
+                st.rerun()
+            elif not warnings:
+                st.info("Nenhuma alteração foi identificada na matriz.")
 
         st.subheader(f"Resumo mensal do forecast de {selected_year}")
         st.caption(
