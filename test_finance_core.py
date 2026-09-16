@@ -23,6 +23,7 @@ from finance_core import (
     suggest_next_year_forecast,
     variance,
     withdrawal_summary,
+    works_for_month,
 )
 
 
@@ -139,6 +140,50 @@ class PartialRealizationTests(unittest.TestCase):
         self.assertEqual(cancelled_month["custo_previsto"], 0)
         self.assertEqual(cancelled_month["lucro_previsto"], 0)
 
+    def test_month_keeps_current_works_and_carries_only_older_payables(self):
+        works = normalize_works([
+            {
+                "Competência": "09/2026", "Obra / Histórico": "Pendente anterior",
+                "Custo Previsto (R$)": 1_450, "Valor Pago (R$)": 725,
+                "Status": "Parcial",
+            },
+            {
+                "Competência": "09/2026", "Obra / Histórico": "Quitada anterior",
+                "Custo Previsto (R$)": 3_200, "Valor Pago (R$)": 3_200,
+                "Status": "Concluída",
+            },
+            {
+                "Competência": "10/2026", "Obra / Histórico": "Obra de outubro",
+                "Custo Previsto (R$)": 800, "Valor Pago (R$)": 0,
+                "Status": "Em andamento",
+            },
+            {
+                "Competência": "11/2026", "Obra / Histórico": "Obra futura",
+                "Custo Previsto (R$)": 500, "Valor Pago (R$)": 0,
+                "Status": "Em andamento",
+            },
+        ])
+
+        october = works_for_month(works, 2026, 10)
+
+        self.assertEqual(set(october["obra"]), {"Pendente anterior", "Obra de outubro"})
+        self.assertEqual(construction_payables(october), 1_525)
+        september = monthly_work_summary(works, 2026).iloc[8]
+        self.assertEqual(september["custo_previsto"], 4_650)
+        self.assertEqual(september["pago"], 3_925)
+
+    def test_previous_year_payable_carries_into_january(self):
+        works = normalize_works([{
+            "Competência": "12/2026", "Obra / Histórico": "Saldo da virada",
+            "Custo Previsto (R$)": 900, "Valor Pago (R$)": 400,
+            "Status": "Parcial",
+        }])
+
+        january = works_for_month(works, 2027, 1)
+
+        self.assertEqual(january.iloc[0]["obra"], "Saldo da virada")
+        self.assertEqual(january.iloc[0]["falta_pagar"], 500)
+
     def test_legacy_confirmed_rows_remain_in_monthly_history(self):
         legacy_revenue = {
             "Mês": "10/01/2026",
@@ -243,4 +288,3 @@ class PartialRealizationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
