@@ -145,6 +145,18 @@ def is_distribution_liability_balance(value: object) -> bool:
     )
 
 
+def is_profit_withdrawal_nature(value: object) -> bool:
+    """Return whether a launch is a partner profit withdrawal, not an operating expense."""
+    return normalize_label(value) in {
+        "retirada",
+        "lucros",
+        "retirada de lucro",
+        "retirada de lucros",
+        "retirada de socio",
+        "retirada de socios",
+    }
+
+
 def customer_pass_through_distribution_effect(value: object) -> float:
     """Positive client payables reduce distribution; negative balances increase it."""
     return -parse_money(value)
@@ -199,23 +211,6 @@ def construction_payables(works: pd.DataFrame) -> float:
     if works.empty or "falta_pagar" not in works:
         return 0.0
     return float(works["falta_pagar"].sum())
-
-
-def works_for_month(works: pd.DataFrame, year: int, month: int) -> pd.DataFrame:
-    """Return works from the selected month plus older supplier payables.
-
-    The original competence is preserved so historical monthly totals do not
-    change. Older rows are only carried forward while they still have a
-    supplier balance to pay.
-    """
-    if works.empty:
-        return works.copy()
-    reference = pd.Timestamp(int(year), int(month), 1)
-    competence = works["competencia"]
-    active = works["status"] != "Cancelada"
-    current_month = competence == reference
-    older_payable = (competence < reference) & (works["falta_pagar"] > 0.005)
-    return works[competence.notna() & active & (current_month | older_payable)].copy()
 
 
 def monthly_work_summary(works: pd.DataFrame, year: int) -> pd.DataFrame:
@@ -401,16 +396,25 @@ def monthly_forecast(df: pd.DataFrame, year: int) -> pd.DataFrame:
     if opened.empty:
         months["receitas"] = 0.0
         months["despesas"] = 0.0
+        months["retiradas"] = 0.0
         months["resultado"] = 0.0
+        months["movimento_caixa"] = 0.0
         return months
     opened = opened[opened["competencia"].dt.year == year].copy()
-    grouped = opened.groupby(["competencia", "tipo"], dropna=False)["pendente"].sum().unstack(fill_value=0)
-    grouped = grouped.rename(columns={"Receita": "receitas", "Despesa": "despesas"}).reset_index()
+    opened["grupo_fluxo"] = "despesas"
+    opened.loc[opened["tipo"] == "Receita", "grupo_fluxo"] = "receitas"
+    opened.loc[
+        (opened["tipo"] == "Despesa")
+        & opened["natureza"].map(is_profit_withdrawal_nature),
+        "grupo_fluxo",
+    ] = "retiradas"
+    grouped = opened.groupby(["competencia", "grupo_fluxo"], dropna=False)["pendente"].sum().unstack(fill_value=0).reset_index()
     months = months.merge(grouped, on="competencia", how="left").fillna(0.0)
-    for column in ("receitas", "despesas"):
+    for column in ("receitas", "despesas", "retiradas"):
         if column not in months:
             months[column] = 0.0
     months["resultado"] = months["receitas"] - months["despesas"]
+    months["movimento_caixa"] = months["resultado"] - months["retiradas"]
     return months
 
 
@@ -421,13 +425,20 @@ def monthly_realized_history(df: pd.DataFrame, year: int) -> pd.DataFrame:
     if tracked.empty:
         months["receitas_realizadas"] = 0.0
         months["despesas_realizadas"] = 0.0
+        months["retiradas_realizadas"] = 0.0
         months["resultado_realizado"] = 0.0
         return months
     tracked = tracked[(tracked["competencia"].dt.year == year) & (tracked["realizado"] > 0)].copy()
-    grouped = tracked.groupby(["competencia", "tipo"], dropna=False)["realizado"].sum().unstack(fill_value=0)
-    grouped = grouped.rename(columns={"Receita": "receitas_realizadas", "Despesa": "despesas_realizadas"}).reset_index()
+    tracked["grupo_realizado"] = "despesas_realizadas"
+    tracked.loc[tracked["tipo"] == "Receita", "grupo_realizado"] = "receitas_realizadas"
+    tracked.loc[
+        (tracked["tipo"] == "Despesa")
+        & tracked["natureza"].map(is_profit_withdrawal_nature),
+        "grupo_realizado",
+    ] = "retiradas_realizadas"
+    grouped = tracked.groupby(["competencia", "grupo_realizado"], dropna=False)["realizado"].sum().unstack(fill_value=0).reset_index()
     months = months.merge(grouped, on="competencia", how="left").fillna(0.0)
-    for column in ("receitas_realizadas", "despesas_realizadas"):
+    for column in ("receitas_realizadas", "despesas_realizadas", "retiradas_realizadas"):
         if column not in months:
             months[column] = 0.0
     months["resultado_realizado"] = months["receitas_realizadas"] - months["despesas_realizadas"]
@@ -533,7 +544,8 @@ def projection(monthly: pd.DataFrame, bank_balance: float, from_date: date) -> p
     result = monthly.copy()
     cutoff = pd.Timestamp(from_date.year, from_date.month, 1)
     result["aplicavel"] = result["competencia"] >= cutoff
-    result["movimento"] = result["resultado"].where(result["aplicavel"], 0.0)
+    cash_movement = result["movimento_caixa"] if "movimento_caixa" in result else result["resultado"]
+    result["movimento"] = cash_movement.where(result["aplicavel"], 0.0)
     result["saldo_projetado"] = bank_balance + result["movimento"].cumsum()
     return result
 
@@ -606,3 +618,4 @@ def safe_day(value: int) -> int:
 
 def clean_key(value: str) -> str:
     return re.sub(r"[^a-z0-9_]+", "_", str(value).strip().lower()).strip("_")
+
