@@ -1212,6 +1212,14 @@ with tab_forecast:
                 **MESES,
             }
         )
+        matrix["_type_order"] = matrix["Tipo"].map(
+            lambda value: 0 if normalize_label(value) == "receita" else 1
+        )
+        matrix = (
+            matrix.sort_values("_type_order", kind="stable")
+            .drop(columns="_type_order")
+            .reset_index(drop=True)
+        )
         matrix_editor_key = f"annual_matrix_editor_{selected_year}"
         edited_matrix = st.data_editor(
             matrix,
