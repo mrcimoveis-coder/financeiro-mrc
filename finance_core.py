@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import calendar
+import hashlib
 import re
 import uuid
 from datetime import date, datetime
@@ -224,6 +225,52 @@ def monthly_work_summary(works: pd.DataFrame, year: int) -> pd.DataFrame:
     return months.merge(grouped, on="competencia", how="left").fillna(0.0)
 
 
+def normalize_withdrawals(records: list[dict], default_year: int = 2026) -> pd.DataFrame:
+    rows = []
+    for sheet_row, record in enumerate(records, start=2):
+        rows.append({
+            "sheet_row": sheet_row,
+            "competencia": month_start(record.get("Competência"), default_year),
+            "pro_labore": parse_money(record.get("Pró-labore (R$)")),
+            "lucros": parse_money(record.get("Retirada de Lucros (R$)")),
+            "adicional": parse_money(record.get("Retirada Adicional (R$)")),
+            "observacao": str(record.get("Observação") or "").strip(),
+        })
+    return pd.DataFrame(rows)
+
+
+def withdrawal_summary(
+    withdrawals: pd.DataFrame,
+    year: int,
+    through_month: int,
+    partner_count: int = 2,
+) -> dict[str, float]:
+    months = max(0, min(int(through_month), 12))
+    partners = max(int(partner_count), 1)
+    if withdrawals.empty or months == 0:
+        pro_labore = profits = additional = 0.0
+    else:
+        selected = withdrawals[
+            withdrawals["competencia"].notna()
+            & (withdrawals["competencia"].dt.year == int(year))
+            & (withdrawals["competencia"].dt.month <= months)
+        ]
+        pro_labore = float(selected["pro_labore"].sum())
+        profits = float(selected["lucros"].sum())
+        additional = float(selected["adicional"].sum())
+    total = pro_labore + profits + additional
+    monthly_average = total / months if months else 0.0
+    return {
+        "pro_labore": pro_labore,
+        "lucros": profits,
+        "adicional": additional,
+        "total": total,
+        "meses": float(months),
+        "media_mensal": monthly_average,
+        "media_socio_mes": monthly_average / partners,
+    }
+
+
 def operational_balance_item(record: dict) -> tuple[str, float] | None:
     """Convert imported point-in-time positions into signed balance items."""
     description = normalize_label(record.get("Histórico"))
@@ -368,6 +415,101 @@ def monthly_realized_history(df: pd.DataFrame, year: int) -> pd.DataFrame:
             months[column] = 0.0
     months["resultado_realizado"] = months["receitas_realizadas"] - months["despesas_realizadas"]
     return months
+
+
+def suggest_next_year_forecast(
+    df: pd.DataFrame,
+    source_year: int,
+    target_year: int,
+) -> pd.DataFrame:
+    """Prepare next-year operating suggestions for explicit human approval."""
+    columns = [
+        "origem_chave", "tipo", "categoria", "historico", "envolvido",
+        "conta", "natureza", "valor_sugerido", "periodicidade",
+        "primeiro_vencimento", "ocorrencias", "dia_vencimento", "observacao",
+    ]
+    if df.empty or "competencia" not in df:
+        return pd.DataFrame(columns=columns)
+
+    source = df[
+        df["competencia"].notna()
+        & (df["competencia"].dt.year == int(source_year))
+        & (df["status"].str.lower() != "cancelado")
+    ].copy()
+    if source.empty:
+        return pd.DataFrame(columns=columns)
+
+    excluded_natures = {
+        "emprestimo a receber", "investimento", "reserva",
+        "retirada de socios", "outro",
+    }
+    source = source[~source["natureza"].map(normalize_label).isin(excluded_natures)].copy()
+    source = source[(source["previsto"] > 0) | (source["realizado"] > 0)].copy()
+    if source.empty:
+        return pd.DataFrame(columns=columns)
+
+    identity_columns = ["tipo", "historico", "categoria", "envolvido"]
+    for column in identity_columns:
+        source[f"_{column}"] = source[column].map(normalize_label)
+    source["_identity"] = source[[f"_{column}" for column in identity_columns]].agg("|".join, axis=1)
+    source = source.sort_values(["_identity", "competencia", "sheet_row"])
+    source = source.drop_duplicates(["_identity", "competencia"], keep="last")
+
+    suggestions: list[dict] = []
+    frequency_names = {1: "Mensal", 3: "Trimestral", 6: "Semestral", 12: "Anual"}
+    for identity, group in source.groupby("_identity", sort=True):
+        group = group.sort_values(["competencia", "sheet_row"])
+        latest = group.iloc[-1]
+        months = sorted(group["competencia"].dt.month.unique().tolist())
+        gaps = [later - earlier for earlier, later in zip(months, months[1:])]
+        needs_review = False
+
+        if len(months) == 1:
+            interval = 12
+            occurrences = 1
+        elif gaps and len(set(gaps)) == 1 and gaps[0] in {1, 3, 6}:
+            interval = gaps[0]
+            occurrences = ((12 - months[0]) // interval) + 1
+        elif len(months) >= 6:
+            interval = 1
+            occurrences = 12 - months[0] + 1
+            needs_review = True
+        else:
+            interval = 12
+            occurrences = 1
+            needs_review = True
+
+        planned_value = float(latest["previsto"])
+        if planned_value <= 0:
+            planned_value = float(latest["realizado"])
+        due = latest.get("vencimento")
+        due_day = int(due.day) if pd.notna(due) else 1
+        first_due = date(
+            int(target_year), int(months[0]),
+            min(due_day, calendar.monthrange(int(target_year), int(months[0]))[1]),
+        )
+        source_key = hashlib.sha1(
+            f"{int(source_year)}|{int(target_year)}|{identity}".encode("utf-8")
+        ).hexdigest()[:16].upper()
+        note = f"Sugestão baseada nos lançamentos de {int(source_year)}."
+        if needs_review:
+            note += " Periodicidade irregular; confirme a frequência antes de aprovar."
+        suggestions.append({
+            "origem_chave": source_key,
+            "tipo": latest["tipo"],
+            "categoria": latest["categoria"],
+            "historico": latest["historico"],
+            "envolvido": latest["envolvido"],
+            "conta": latest["conta"],
+            "natureza": latest["natureza"],
+            "valor_sugerido": planned_value,
+            "periodicidade": frequency_names[interval],
+            "primeiro_vencimento": first_due,
+            "ocorrencias": int(occurrences),
+            "dia_vencimento": due_day,
+            "observacao": note,
+        })
+    return pd.DataFrame(suggestions, columns=columns)
 
 
 def projection(monthly: pd.DataFrame, bank_balance: float, from_date: date) -> pd.DataFrame:
