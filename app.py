@@ -205,21 +205,44 @@ def main_sheet():
 
 
 def load_records(ws) -> list[dict]:
-    for attempt in range(4):
+    cache = st.session_state.setdefault("_sheet_records_cache", {})
+    cache_key = f"{spreadsheet().id}:{ws.id}"
+    cached = cache.get(cache_key)
+    if cached and time.monotonic() - cached["loaded_at"] < 20:
+        return [dict(row) for row in cached["records"]]
+
+    for attempt in range(5):
         try:
-            return ws.get_all_records(numericise_ignore=["all"])
+            records = ws.get_all_records(numericise_ignore=["all"])
+            cache[cache_key] = {"loaded_at": time.monotonic(), "records": records}
+            return [dict(row) for row in records]
         except gspread.exceptions.APIError as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
-            if status != 429 or attempt == 3:
+            error_text = str(exc).lower()
+            temporary = status in {429, 500, 502, 503, 504} or any(
+                term in error_text for term in ("quota", "resource_exhausted", "rate limit")
+            )
+            if not temporary:
                 raise
-            time.sleep(2 ** attempt)
-    return []
+            if attempt < 4:
+                time.sleep(2 ** attempt)
+    if cached:
+        st.warning("O Google Sheets está respondendo lentamente. Exibindo a última leitura salva; tente novamente em alguns segundos.")
+        return [dict(row) for row in cached["records"]]
+    st.warning("O Google Sheets atingiu um limite temporário de consultas. Aguarde alguns segundos e recarregue a página.")
+    st.stop()
+
+
+def invalidate_records(ws) -> None:
+    cache = st.session_state.get("_sheet_records_cache", {})
+    cache.pop(f"{spreadsheet().id}:{ws.id}", None)
 
 
 def append_dicts(ws, headers: list[str], rows: list[dict]) -> None:
     if not rows:
         return
     ws.append_rows([[row.get(header, "") for header in headers] for row in rows], value_input_option="USER_ENTERED")
+    invalidate_records(ws)
 
 
 def update_row(ws, row_number: int, updates: dict) -> None:
@@ -234,6 +257,28 @@ def update_row(ws, row_number: int, updates: dict) -> None:
         values=[values],
         value_input_option="USER_ENTERED",
     )
+    invalidate_records(ws)
+
+
+def batch_update_rows(ws, changes: list[tuple[int, dict]]) -> None:
+    if not changes:
+        return
+    headers = ws.row_values(1)
+    records = load_records(ws)
+    payload = []
+    for row_number, updates in changes:
+        record_index = int(row_number) - 2
+        current = records[record_index] if 0 <= record_index < len(records) else {}
+        values = [current.get(header, "") for header in headers]
+        for key, value in updates.items():
+            if key in headers:
+                values[headers.index(key)] = value
+        payload.append({
+            "range": f"A{int(row_number)}:{gspread.utils.rowcol_to_a1(int(row_number), len(headers))}",
+            "values": [values],
+        })
+    ws.batch_update(payload, value_input_option="USER_ENTERED")
+    invalidate_records(ws)
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -945,13 +990,19 @@ with tab_forecast:
             },
             key=f"forecast_review_{review_target_year}",
         )
-        if st.button("Salvar e processar decisões", type="primary"):
+        st.caption(
+            "Você pode ajustar os valores antes de aprovar. Mantenha a decisão como Pendente e salve "
+            "periodicamente para guardar o rascunho."
+        )
+        if st.button("Salvar rascunho e processar decisões", type="primary"):
             intervals = {"Mensal": 1, "Trimestral": 3, "Semestral": 6, "Anual": 12}
             existing_forecast_review_ids = {
                 str(row.get("Revisão ID") or "").strip() for row in load_records(ws_forecast)
             }
             approved = rejected = pending = invalid = 0
             now = datetime.now().strftime("%d/%m/%Y %H:%M")
+            review_changes = []
+            approved_forecast_rows = []
             for _, row in edited_reviews.iterrows():
                 decision = str(row["Decisão"])
                 first_due = row["Primeiro vencimento"]
@@ -997,7 +1048,7 @@ with tab_forecast:
                         )
                         for approved_row in approved_rows:
                             approved_row["Revisão ID"] = review_id
-                        append_dicts(ws_forecast, MAIN_HEADERS, approved_rows)
+                        approved_forecast_rows.extend(approved_rows)
                         existing_forecast_review_ids.add(review_id)
                         updates["Status"] = "Aprovado"
                         approved += 1
@@ -1009,7 +1060,9 @@ with tab_forecast:
                 else:
                     updates["Status"] = "Aguardando revisão"
                     pending += 1
-                update_row(ws_forecast_review, int(row["sheet_row"]), updates)
+                review_changes.append((int(row["sheet_row"]), updates))
+            append_dicts(ws_forecast, MAIN_HEADERS, approved_forecast_rows)
+            batch_update_rows(ws_forecast_review, review_changes)
             if invalid:
                 st.warning(
                     f"{invalid} sugestão(ões) precisam de ajuste. Confira valor, data e quantidade; "
@@ -1326,14 +1379,16 @@ with tab_withdrawals:
     )
     if st.button("Salvar retiradas", type="primary"):
         now = datetime.now().strftime("%d/%m/%Y %H:%M")
+        withdrawal_changes = []
         for _, row in edited_withdrawals.iterrows():
-            update_row(ws_withdrawals, int(row["sheet_row"]), {
+            withdrawal_changes.append((int(row["sheet_row"]), {
                 "Pró-labore (R$)": format_brl(float(row["Pró-labore"])),
                 "Retirada de Lucros (R$)": format_brl(float(row["Retirada de lucros"])),
                 "Retirada Adicional (R$)": format_brl(float(row["Retirada adicional"])),
                 "Observação": str(row["Observação"]).strip(),
                 "Atualizado Em": now,
-            })
+            }))
+        batch_update_rows(ws_withdrawals, withdrawal_changes)
         st.success("Retiradas atualizadas.")
         st.rerun()
 
