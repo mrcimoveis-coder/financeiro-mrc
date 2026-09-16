@@ -31,6 +31,7 @@ from finance_core import (
     is_customer_pass_through_balance,
     is_distribution_liability_balance,
     is_pending_construction_adjustment_balance,
+    is_profit_withdrawal_nature,
     make_recurrence_rows,
     monthly_forecast,
     monthly_realized_history,
@@ -92,6 +93,14 @@ WITHDRAWAL_HEADERS = [
 
 STABILIZED_RENT_GOAL_TYPE = "Renda mensal estabilizada (manual)"
 MANUAL_GOAL_TYPES = {"Manual", STABILIZED_RENT_GOAL_TYPE}
+NATURE_OPTIONS = [
+    "Operacional",
+    "Retirada de lucros",
+    "Empréstimo a receber",
+    "Investimento",
+    "Reserva",
+    "Outro",
+]
 
 DEFAULT_PARAMETERS = {
     "caucoes_protegidas": (0.0, "Total de cauções que não pode ser distribuído"),
@@ -695,7 +704,17 @@ if not open_df.empty:
 else:
     future_open = open_df
 pending_income = float(future_open.loc[future_open["tipo"] == "Receita", "pendente"].sum()) if not future_open.empty else 0.0
-pending_expense = float(future_open.loc[future_open["tipo"] == "Despesa", "pendente"].sum()) if not future_open.empty else 0.0
+if not future_open.empty:
+    future_withdrawals = future_open["natureza"].map(is_profit_withdrawal_nature)
+    pending_expense = float(
+        future_open.loc[(future_open["tipo"] == "Despesa") & ~future_withdrawals, "pendente"].sum()
+    )
+    pending_withdrawals = float(
+        future_open.loc[(future_open["tipo"] == "Despesa") & future_withdrawals, "pendente"].sum()
+    )
+else:
+    pending_expense = 0.0
+    pending_withdrawals = 0.0
 year_end = float(projected.iloc[-1]["saldo_projetado"]) if not projected.empty else projection_base
 protected = (synced_caution + parameters["reserva_mrc"] + interest_reserve) if is_current_year else 0.0
 active_liabilities = distribution_liabilities if is_current_year else 0.0
@@ -705,11 +724,12 @@ withdrawal_month_limit = today.month if selected_year == today.year else (12 if 
 withdrawal_totals = withdrawal_summary(withdrawals, selected_year, withdrawal_month_limit, partner_count=2)
 
 with tab_summary:
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Saldos atualizados" if is_current_year else "Saldo base do forecast", format_brl(projection_base))
     c2.metric("Receitas pendentes", format_brl(pending_income))
     c3.metric("Despesas pendentes", format_brl(pending_expense))
-    c4.metric("Sobra / falta projetada", format_brl(distributable))
+    c4.metric("Retiradas pendentes", format_brl(pending_withdrawals))
+    c5.metric("Sobra / falta projetada", format_brl(distributable))
     if not is_current_year:
         st.info(
             f"{selected_year} está separado do ano corrente. O saldo base permanece zerado até {selected_year} "
@@ -963,7 +983,7 @@ with tab_launch:
         currency = e.selectbox("Moeda", ["BRL", "USD"])
         amount = f.number_input("Valor previsto", min_value=0.0, step=100.0)
         g, h, i = st.columns(3)
-        nature = g.selectbox("Natureza", ["Operacional", "Empréstimo a receber", "Investimento", "Reserva", "Retirada de sócios", "Outro"])
+        nature = g.selectbox("Natureza", NATURE_OPTIONS)
         involved = h.text_input("Envolvido")
         account = i.text_input("Conta")
         notes = st.text_area("Observações")
@@ -1188,7 +1208,7 @@ with tab_forecast:
         g, h, i = st.columns(3)
         occurrences = g.number_input("Quantidade de ocorrências", min_value=1, max_value=120, value=12, step=1)
         due_day = h.number_input("Dia do vencimento", min_value=1, max_value=31, value=start.day, step=1)
-        nature = i.selectbox("Natureza", ["Operacional", "Empréstimo a receber", "Investimento", "Reserva", "Retirada de sócios", "Outro"], key="forecast_nature")
+        nature = i.selectbox("Natureza", NATURE_OPTIONS, key="forecast_nature")
         j, k = st.columns(2)
         involved = j.text_input("Envolvido")
         account = k.text_input("Conta")
@@ -1234,7 +1254,7 @@ with tab_forecast:
         matrix_details = (
             year_series.sort_values(["_matrix_key", "competencia", "sheet_row"])
             .groupby("_matrix_key", as_index=False)
-            .first()[["_matrix_key", "tipo", "historico", "categoria", "envolvido"]]
+            .first()[["_matrix_key", "tipo", "historico", "categoria", "envolvido", "natureza"]]
         )
         matrix_values = year_series.pivot_table(
             index="_matrix_key", columns="mes_num", values="pendente", aggfunc="sum", fill_value=0.0
@@ -1244,13 +1264,14 @@ with tab_forecast:
             if month_number not in matrix:
                 matrix[month_number] = 0.0
         matrix = matrix[
-            ["_matrix_key", "tipo", "historico", "categoria", "envolvido", *range(1, 13)]
+            ["_matrix_key", "tipo", "historico", "categoria", "envolvido", "natureza", *range(1, 13)]
         ].rename(
             columns={
                 "tipo": "Tipo",
                 "historico": "Lançamento",
                 "categoria": "Categoria",
                 "envolvido": "Envolvido",
+                "natureza": "Natureza",
                 **MESES,
             }
         )
@@ -1275,6 +1296,9 @@ with tab_forecast:
                 "Tipo": st.column_config.SelectboxColumn(
                     options=["Receita", "Despesa"], required=True,
                 ),
+                "Natureza": st.column_config.SelectboxColumn(
+                    options=NATURE_OPTIONS, required=True,
+                ),
                 **{
                     month_name: st.column_config.NumberColumn(
                         min_value=0.0,
@@ -1287,7 +1311,8 @@ with tab_forecast:
             key=matrix_editor_key,
         )
         st.caption(
-            "Edite o nome, tipo, categoria ou envolvido para corrigir a série inteira. "
+            "Edite o nome, tipo, categoria, envolvido ou natureza para corrigir a série inteira. "
+            "Use Retirada de lucros para reduzir a sobra sem reduzir o resultado operacional. "
             "A alteração em um mês afeta somente aquele mês. Use a última linha vazia para incluir um lançamento. "
             "Para excluir uma série, remova a linha pelo controle da tabela ou apague seu conteúdo e deixe todos os meses zerados."
         )
@@ -1326,6 +1351,7 @@ with tab_forecast:
                 edited_description = clean_editor_text(edited_row.get("Lançamento"))
                 edited_category_raw = clean_editor_text(edited_row.get("Categoria"))
                 edited_involved = clean_editor_text(edited_row.get("Envolvido"))
+                edited_nature = clean_editor_text(edited_row.get("Natureza"), "Operacional")
                 row_is_empty = (
                     not edited_description
                     and not edited_category_raw
@@ -1361,6 +1387,7 @@ with tab_forecast:
                             "Categoria": edited_category,
                             "Corretor / Envolvido": edited_involved,
                             "Histórico": edited_description,
+                            "Natureza": edited_nature,
                             "Valor (R$)": format_brl(edited_value),
                             "Status": "Previsto",
                             "ID": new_id(),
@@ -1402,6 +1429,8 @@ with tab_forecast:
                     common_updates["Categoria"] = edited_category
                 if edited_involved != clean_editor_text(original_row.get("Envolvido")):
                     common_updates["Corretor / Envolvido"] = edited_involved
+                if edited_nature != clean_editor_text(original_row.get("Natureza"), "Operacional"):
+                    common_updates["Natureza"] = edited_nature
                 if common_updates:
                     common_updates["Atualizado Em"] = now
                     for sheet_row in source_rows["sheet_row"]:
@@ -1451,6 +1480,7 @@ with tab_forecast:
                             "Categoria": edited_category,
                             "Corretor / Envolvido": edited_involved,
                             "Histórico": edited_description,
+                            "Natureza": edited_nature,
                             "Valor (R$)": format_brl(edited_value),
                             "Status": "Previsto",
                             "ID": new_id(),
@@ -1492,26 +1522,29 @@ with tab_forecast:
             "Os valores abaixo vêm dos mesmos lançamentos da matriz e são atualizados "
             "sempre que uma receita ou despesa é alterada."
         )
-        monthly_summary = monthly[["mes", "receitas", "despesas", "resultado"]].rename(
+        monthly_summary = monthly[["mes", "receitas", "despesas", "retiradas", "resultado"]].rename(
             columns={
                 "mes": "Mês",
                 "receitas": "Receitas previstas",
                 "despesas": "Despesas previstas",
+                "retiradas": "Retiradas de lucros",
                 "resultado": "Resultado previsto",
             }
         )
         display_money_table(
             monthly_summary,
-            ["Receitas previstas", "Despesas previstas", "Resultado previsto"],
+            ["Receitas previstas", "Despesas previstas", "Retiradas de lucros", "Resultado previsto"],
         )
 
         annual_income = float(monthly["receitas"].sum())
         annual_expense = float(monthly["despesas"].sum())
+        annual_withdrawals = float(monthly["retiradas"].sum())
         annual_result = annual_income - annual_expense
         st.subheader(f"Fechamento anual de {selected_year}")
-        total_income, total_expense, total_result = st.columns(3)
+        total_income, total_expense, total_withdrawals, total_result = st.columns(4)
         total_income.metric("Receitas previstas no ano", format_brl(annual_income))
         total_expense.metric("Despesas previstas no ano", format_brl(annual_expense))
+        total_withdrawals.metric("Retiradas previstas no ano", format_brl(annual_withdrawals))
         total_result.metric("Resultado previsto no ano", format_brl(annual_result))
 
     st.subheader("Alterar valores a partir de um mês")
