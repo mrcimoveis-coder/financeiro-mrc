@@ -48,7 +48,6 @@ from finance_core import (
     suggest_next_year_forecast,
     variance,
     withdrawal_summary,
-    works_for_month,
 )
 
 
@@ -90,6 +89,9 @@ WITHDRAWAL_HEADERS = [
     "Competência", "Pró-labore (R$)", "Retirada de Lucros (R$)",
     "Retirada Adicional (R$)", "Observação", "Atualizado Em",
 ]
+
+STABILIZED_RENT_GOAL_TYPE = "Renda mensal estabilizada (manual)"
+MANUAL_GOAL_TYPES = {"Manual", STABILIZED_RENT_GOAL_TYPE}
 
 DEFAULT_PARAMETERS = {
     "caucoes_protegidas": (0.0, "Total de cauções que não pode ser distribuído"),
@@ -467,7 +469,7 @@ def ensure_initial_goals(ws) -> None:
     now = datetime.now().strftime("%d/%m/%Y %H:%M")
     initial = [
         ("Faturamento", "Receitas realizadas no ano", "", 1_800_000.0),
-        ("Aluguel Mensal", "Receitas realizadas no mês", "aluguel", 100_000.0),
+        ("Aluguel Mensal", STABILIZED_RENT_GOAL_TYPE, "", 100_000.0),
     ]
     rows = []
     for goal_name, calculation_type, launch_filter, target in initial:
@@ -480,6 +482,36 @@ def ensure_initial_goals(ws) -> None:
             "Valor Manual Atingido (R$)": "", "Criado Em": now, "Atualizado Em": now,
         })
     append_dicts(ws, GOAL_HEADERS, rows)
+
+
+def ensure_stabilized_rent_goal(ws) -> None:
+    """Keep the monthly rent goal manual without changing its saved current value."""
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+    changes = []
+    for row_number, goal in enumerate(load_records(ws), start=2):
+        if normalize_label(goal.get("Meta")) != "aluguel mensal":
+            continue
+        if str(goal.get("Tipo de Apuração") or "").strip() == STABILIZED_RENT_GOAL_TYPE:
+            continue
+        changes.append((row_number, {
+            "Tipo de Apuração": STABILIZED_RENT_GOAL_TYPE,
+            "Filtro do Lançamento": "",
+            "Atualizado Em": now,
+        }))
+    batch_update_rows(ws, changes)
+
+
+def standardize_monthly_rent_labels(ws, label_field: str) -> None:
+    """Rename the former generic monthly revenue label without touching its values."""
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+    changes = []
+    for row_number, record in enumerate(load_records(ws), start=2):
+        if normalize_label(record.get(label_field)) == "receita mensal":
+            changes.append((row_number, {
+                label_field: "Receita Mensal de Aluguel",
+                "Atualizado Em": now,
+            }))
+    batch_update_rows(ws, changes)
 
 
 def ensure_withdrawal_year(ws, year: int) -> None:
@@ -528,7 +560,7 @@ def display_money_table(frame: pd.DataFrame, columns: list[str]) -> None:
 
 def achieved_goal_value(goal: dict, launches_df: pd.DataFrame, year: int, reference: date) -> float:
     calculation_type = str(goal.get("Tipo de Apuração") or "Manual")
-    if calculation_type == "Manual":
+    if calculation_type in MANUAL_GOAL_TYPES:
         return parse_money(goal.get("Valor Manual Atingido (R$)"))
     if launches_df.empty:
         return 0.0
@@ -570,12 +602,18 @@ except Exception as exc:
     st.error(f"Não foi possível abrir a base Financeiro_MRC: {exc}")
     st.stop()
 
+ensure_initial_goals(ws_goals)
+ensure_stabilized_rent_goal(ws_goals)
+standardize_monthly_rent_labels(ws_history, "Histórico")
+standardize_monthly_rent_labels(ws_forecast, "Histórico")
+standardize_monthly_rent_labels(ws_forecast_review, "Lançamento")
+standardize_monthly_rent_labels(ws_recurrences, "Descrição")
+
 records = load_records(ws_forecast)
 launches = normalize_launches(records)
 history_launches = normalize_launches(load_records(ws_history))
 ensure_balance_rows(ws_balances)
 ensure_initial_work_rows(ws_works)
-ensure_initial_goals(ws_goals)
 ensure_withdrawal_year(ws_withdrawals, 2026)
 works = normalize_works(load_records(ws_works))
 withdrawals = normalize_withdrawals(load_records(ws_withdrawals))
@@ -693,23 +731,26 @@ with tab_summary:
         for goal in goal_records:
             target = parse_money(goal.get("Valor da Meta (R$)"))
             achieved = achieved_goal_value(goal, combined_history, selected_year, today)
+            calculation_type = str(goal.get("Tipo de Apuração") or "Manual")
             goal_view.append({
                 "Meta": str(goal.get("Meta") or ""),
-                "Período": "Mensal" if goal.get("Tipo de Apuração") == "Receitas realizadas no mês" else "Anual",
+                "Período": "Mensal" if calculation_type in {
+                    "Receitas realizadas no mês", STABILIZED_RENT_GOAL_TYPE,
+                } else "Anual",
                 "Valor da meta": target,
                 "Atingido": achieved,
                 "Falta atingir": max(target - achieved, 0.0),
                 "% atingido": (achieved / target * 100.0) if target > 0 else 0.0,
             })
         goal_frame = pd.DataFrame(goal_view)
+        goal_display = goal_frame.copy()
+        for money_column in ["Valor da meta", "Atingido", "Falta atingir"]:
+            goal_display[money_column] = goal_display[money_column].map(format_brl)
         st.dataframe(
-            goal_frame,
+            goal_display,
             use_container_width=True,
             hide_index=True,
             column_config={
-                "Valor da meta": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Atingido": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Falta atingir": st.column_config.NumberColumn(format="R$ %.2f"),
                 "% atingido": st.column_config.ProgressColumn(min_value=0.0, max_value=100.0, format="%.1f%%"),
             },
         )
@@ -1585,34 +1626,28 @@ with tab_works:
         key="work_month",
     )
     work_summary = work_monthly.iloc[work_month - 1]
-    selected_works = works_for_month(works, selected_year, work_month)
-    displayed_payable = construction_payables(selected_works)
     w1, w2, w3, w4 = st.columns(4)
     w1.metric("Valor cobrado", format_brl(work_summary["cobrado"]))
     w2.metric("Custo previsto", format_brl(work_summary["custo_previsto"]))
     w3.metric("Lucro previsto", format_brl(work_summary["lucro_previsto"]))
-    w4.metric("Falta pagar (inclui anteriores)", format_brl(displayed_payable))
+    w4.metric("Falta pagar", format_brl(work_summary["falta_pagar"]))
 
-    st.subheader("Obras do mês e pendências anteriores")
-    st.caption(
-        "As obras de meses anteriores permanecem aqui enquanto houver saldo a pagar ao prestador. "
-        "A competência original e o histórico mensal não são alterados."
-    )
+    selected_works = works[
+        works["competencia"].notna()
+        & (works["competencia"].dt.year == selected_year)
+        & (works["competencia"].dt.month == work_month)
+    ].copy() if not works.empty else works.copy()
+
+    st.subheader("Obras do mês")
     if selected_works.empty:
-        st.info("Nenhuma obra cadastrada neste mês e nenhuma pendência anterior.")
+        st.info("Nenhuma obra cadastrada neste mês.")
     else:
-        selected_works["pendencia_anterior"] = selected_works["competencia"] < pd.Timestamp(
-            selected_year, work_month, 1
-        )
-        selected_works = selected_works.sort_values(
-            ["pendencia_anterior", "competencia", "status", "obra"],
-            ascending=[False, True, True, True],
-        ).reset_index(drop=True)
+        selected_works = selected_works.sort_values(["status", "obra"]).reset_index(drop=True)
         works_editor_source = pd.DataFrame({
-            "Competência original": selected_works["competencia"].dt.strftime("%m/%Y"),
             "Obra": selected_works["obra"],
             "Cliente": selected_works["cliente"],
             "Valor cobrado": selected_works["cobrado"].astype(float),
+            "Valor recebido": selected_works["recebido"].astype(float),
             "A receber": selected_works["a_receber"].astype(float),
             "Prestador": selected_works["prestador"],
             "PIX do prestador": selected_works["pix"],
@@ -1628,9 +1663,10 @@ with tab_works:
             works_editor_source,
             use_container_width=True,
             hide_index=True,
-            disabled=["Competência original", "A receber", "Falta pagar", "Lucro previsto", "sheet_row"],
+            disabled=["A receber", "Falta pagar", "Lucro previsto", "sheet_row"],
             column_config={
                 "Valor cobrado": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
+                "Valor recebido": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
                 "A receber": st.column_config.NumberColumn(format="R$ %.2f"),
                 "Custo previsto": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
                 "Valor pago": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
@@ -1651,6 +1687,7 @@ with tab_works:
                     "Obra / Histórico": str(row["Obra"]).strip(),
                     "Locador / Cliente": str(row["Cliente"]).strip(),
                     "Valor Cobrado (R$)": format_brl(float(row["Valor cobrado"])),
+                    "Valor Recebido (R$)": format_brl(float(row["Valor recebido"])),
                     "Prestador": str(row["Prestador"]).strip(),
                     "PIX do Prestador": str(row["PIX do prestador"]).strip(),
                     "Custo Previsto (R$)": format_brl(float(row["Custo previsto"])),
@@ -1676,9 +1713,10 @@ with tab_works:
                 value=date(selected_year, work_month, 1),
                 format="DD/MM/YYYY",
             )
-            d, e = st.columns(2)
+            d, e, f = st.columns(3)
             work_charged = d.number_input("Valor cobrado", min_value=0.0, step=100.0)
-            work_cost = e.number_input("Custo previsto do prestador", min_value=0.0, step=100.0)
+            work_received = e.number_input("Valor recebido", min_value=0.0, step=100.0)
+            work_cost = f.number_input("Custo previsto do prestador", min_value=0.0, step=100.0)
             g, h, i = st.columns(3)
             work_paid = g.number_input("Valor já pago", min_value=0.0, step=100.0)
             work_provider = h.text_input("Prestador")
@@ -1692,7 +1730,7 @@ with tab_works:
                 st.error("Informe o valor cobrado ou o custo previsto.")
             else:
                 status = "Concluída" if work_cost > 0 and work_paid >= work_cost else (
-                    "Parcial" if work_paid > 0 else "Em andamento"
+                    "Parcial" if work_paid > 0 or work_received > 0 else "Em andamento"
                 )
                 now = datetime.now().strftime("%d/%m/%Y %H:%M")
                 append_dicts(ws_works, WORK_HEADERS, [{
@@ -1701,7 +1739,7 @@ with tab_works:
                     "Obra / Histórico": work_description.strip(),
                     "Locador / Cliente": work_client.strip(),
                     "Valor Cobrado (R$)": format_brl(work_charged),
-                    "Valor Recebido (R$)": "",
+                    "Valor Recebido (R$)": format_brl(work_received),
                     "Prestador": work_provider.strip(),
                     "PIX do Prestador": work_pix.strip(),
                     "Custo Previsto (R$)": format_brl(work_cost),
@@ -1721,15 +1759,15 @@ with tab_works:
 
     st.subheader(f"Resultado mensal das obras em {selected_year}")
     work_history_view = work_monthly[[
-        "mes", "cobrado", "custo_previsto", "pago", "falta_pagar", "lucro_previsto"
+        "mes", "cobrado", "recebido", "custo_previsto", "pago", "falta_pagar", "lucro_previsto"
     ]].rename(columns={
-        "mes": "Mês", "cobrado": "Valor cobrado",
+        "mes": "Mês", "cobrado": "Valor cobrado", "recebido": "Valor recebido",
         "custo_previsto": "Custo previsto", "pago": "Valor pago",
         "falta_pagar": "Falta pagar", "lucro_previsto": "Lucro previsto",
     })
     display_money_table(
         work_history_view,
-        ["Valor cobrado", "Custo previsto", "Valor pago", "Falta pagar", "Lucro previsto"],
+        ["Valor cobrado", "Valor recebido", "Custo previsto", "Valor pago", "Falta pagar", "Lucro previsto"],
     )
 
 with tab_withdrawals:
@@ -2007,7 +2045,7 @@ with tab_settings:
             "Tipo de apuração": str(goal.get("Tipo de Apuração") or "Manual"),
             "Filtro do lançamento": str(goal.get("Filtro do Lançamento") or ""),
             "Valor da meta": parse_money(goal.get("Valor da Meta (R$)")),
-            "Valor manual atingido": parse_money(goal.get("Valor Manual Atingido (R$)")),
+            "Valor atual informado": parse_money(goal.get("Valor Manual Atingido (R$)")),
             "sheet_row": row_number,
         } for row_number, goal in selected_goal_records])
         edited_goals = st.data_editor(
@@ -2015,11 +2053,21 @@ with tab_settings:
             column_config={
                 "Data da reunião": st.column_config.DateColumn(format="DD/MM/YYYY"),
                 "Tipo de apuração": st.column_config.SelectboxColumn(
-                    options=["Receitas realizadas no ano", "Receitas realizadas no mês", "Manual"],
+                    options=[
+                        "Receitas realizadas no ano",
+                        "Receitas realizadas no mês",
+                        STABILIZED_RENT_GOAL_TYPE,
+                        "Manual",
+                    ],
                     required=True,
                 ),
                 "Valor da meta": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
-                "Valor manual atingido": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
+                "Valor atual informado": st.column_config.NumberColumn(
+                    "Renda estabilizada / valor manual",
+                    min_value=0.0,
+                    format="R$ %.2f",
+                    help="Para a meta de aluguel, informe a renda mensal estabilizada atual da carteira.",
+                ),
                 "sheet_row": None,
             },
             key=f"goals_editor_{selected_year}",
@@ -2036,7 +2084,7 @@ with tab_settings:
                     "Tipo de Apuração": str(goal["Tipo de apuração"]),
                     "Filtro do Lançamento": str(goal["Filtro do lançamento"]).strip(),
                     "Valor da Meta (R$)": format_brl(float(goal["Valor da meta"])),
-                    "Valor Manual Atingido (R$)": format_brl(float(goal["Valor manual atingido"])),
+                    "Valor Manual Atingido (R$)": format_brl(float(goal["Valor atual informado"])),
                     "Atualizado Em": now,
                 })
             st.success("Metas atualizadas.")
@@ -2052,7 +2100,12 @@ with tab_settings:
             c, d = st.columns(2)
             goal_calculation = c.selectbox(
                 "Tipo de apuração",
-                ["Receitas realizadas no ano", "Receitas realizadas no mês", "Manual"],
+                [
+                    "Receitas realizadas no ano",
+                    "Receitas realizadas no mês",
+                    STABILIZED_RENT_GOAL_TYPE,
+                    "Manual",
+                ],
             )
             goal_target = d.number_input("Valor da meta", min_value=0.0, step=1000.0)
             e, f = st.columns(2)
@@ -2061,9 +2114,9 @@ with tab_settings:
                 help="Exemplo: aluguel. Deixe em branco para considerar todas as receitas.",
             )
             manual_achieved = f.number_input(
-                "Valor atingido manual",
+                "Renda estabilizada / valor manual",
                 min_value=0.0, step=1000.0,
-                disabled=goal_calculation != "Manual",
+                disabled=goal_calculation not in MANUAL_GOAL_TYPES,
             )
             add_goal = st.form_submit_button("Cadastrar meta", type="primary")
         if add_goal:
@@ -2077,7 +2130,9 @@ with tab_settings:
                     "Meta": goal_name, "Tipo de Apuração": goal_calculation,
                     "Filtro do Lançamento": goal_filter,
                     "Valor da Meta (R$)": format_brl(goal_target),
-                    "Valor Manual Atingido (R$)": format_brl(manual_achieved) if goal_calculation == "Manual" else "",
+                    "Valor Manual Atingido (R$)": (
+                        format_brl(manual_achieved) if goal_calculation in MANUAL_GOAL_TYPES else ""
+                    ),
                     "Criado Em": now, "Atualizado Em": now,
                 }])
                 st.success("Meta cadastrada.")
@@ -2113,3 +2168,4 @@ with tab_settings:
     d1.metric("Total distribuível", format_brl(distributable))
     d2.metric("Sócio 1", format_brl(max(distributable, 0) * parameters["percentual_socio_1"] / 100))
     d3.metric("Sócio 2", format_brl(max(distributable, 0) * parameters["percentual_socio_2"] / 100))
+
