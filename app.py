@@ -1495,22 +1495,73 @@ with tab_forecast:
             apply_change = st.form_submit_button("Aplicar aos meses seguintes", type="primary")
         if apply_change:
             cutoff = pd.Timestamp(selected_year, change_month, 1)
-            affected = editable_series[
+            series_rows = editable_series[
                 (editable_series["serie_id"] == selected_series)
-                & (editable_series["competencia"] >= cutoff)
-            ]
-            for _, row in affected.iterrows():
-                update_row(
-                    ws_forecast,
-                    int(row["sheet_row"]),
-                    {
-                        "Valor (R$)": format_brl(new_value),
-                        "Valor Previsto (R$)": format_brl(new_value),
-                        "Atualizado Em": datetime.now().strftime("%d/%m/%Y %H:%M"),
-                    },
+                & (editable_series["competencia"].dt.year == selected_year)
+            ].copy()
+            now = datetime.now().strftime("%d/%m/%Y %H:%M")
+            changes: list[tuple[int, dict]] = []
+            missing_rows: list[dict] = []
+            duplicate_months: list[str] = []
+            base_row = series_rows.sort_values(["competencia", "sheet_row"]).iloc[0]
+            base_index = int(base_row["sheet_row"]) - 2
+            base_record = dict(records[base_index]) if 0 <= base_index < len(records) else {}
+            due_values = series_rows["vencimento"].dropna()
+            due_day = int(due_values.iloc[0].day) if not due_values.empty else 1
+
+            for month_number in range(change_month, 13):
+                month_rows = series_rows[series_rows["competencia"].dt.month == month_number]
+                if len(month_rows) > 1:
+                    duplicate_months.append(MESES[month_number])
+                if not month_rows.empty:
+                    for _, row in month_rows.iterrows():
+                        changes.append((int(row["sheet_row"]), {
+                            "Valor (R$)": format_brl(new_value),
+                            "Valor Previsto (R$)": format_brl(new_value),
+                            "Atualizado Em": now,
+                        }))
+                    continue
+                if new_value <= 0:
+                    continue
+                first_day = pd.Timestamp(selected_year, month_number, 1)
+                due = date(selected_year, month_number, min(due_day, first_day.days_in_month))
+                new_row = {header: base_record.get(header, "") for header in MAIN_HEADERS}
+                new_row.update({
+                    "Mês": MESES[month_number],
+                    "Valor (R$)": format_brl(new_value),
+                    "Status": "Previsto",
+                    "ID": new_id(),
+                    "Competência": f"{month_number:02d}/{selected_year}",
+                    "Vencimento": due.strftime("%d/%m/%Y"),
+                    "Valor Previsto (R$)": format_brl(new_value),
+                    "Valor Realizado (R$)": "",
+                    "Data Quitação": "",
+                    "Série ID": selected_series,
+                    "Criado Em": now,
+                    "Atualizado Em": now,
+                })
+                missing_rows.append(new_row)
+
+            batch_update_rows(ws_forecast, changes)
+            append_dicts(ws_forecast, MAIN_HEADERS, missing_rows)
+            if duplicate_months:
+                st.warning(
+                    "A série possui mais de um registro em "
+                    + ", ".join(duplicate_months)
+                    + "; todos foram atualizados."
                 )
-            st.success(f"{len(affected)} mês(es) atualizado(s).")
-            st.rerun()
+            total_months = len({
+                int(row["competencia"].month)
+                for _, row in series_rows[series_rows["competencia"] >= cutoff].iterrows()
+            }) + len(missing_rows)
+            if changes or missing_rows:
+                st.toast(
+                    f"{total_months} mês(es) ajustado(s): "
+                    f"{len(changes)} registro(s) atualizado(s) e {len(missing_rows)} criado(s)."
+                )
+                st.rerun()
+            else:
+                st.info("Nenhum registro precisou ser alterado.")
 
 with tab_works:
     st.subheader("Controle de obras")
