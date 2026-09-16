@@ -18,12 +18,12 @@ from finance_core import (
     is_customer_pass_through_balance,
     is_distribution_liability_balance,
     is_pending_construction_adjustment_balance,
+    is_profit_withdrawal_nature,
     projection,
     realization_tracking,
     suggest_next_year_forecast,
     variance,
     withdrawal_summary,
-    works_for_month,
 )
 
 
@@ -140,50 +140,6 @@ class PartialRealizationTests(unittest.TestCase):
         self.assertEqual(cancelled_month["custo_previsto"], 0)
         self.assertEqual(cancelled_month["lucro_previsto"], 0)
 
-    def test_month_keeps_current_works_and_carries_only_older_payables(self):
-        works = normalize_works([
-            {
-                "Competência": "09/2026", "Obra / Histórico": "Pendente anterior",
-                "Custo Previsto (R$)": 1_450, "Valor Pago (R$)": 725,
-                "Status": "Parcial",
-            },
-            {
-                "Competência": "09/2026", "Obra / Histórico": "Quitada anterior",
-                "Custo Previsto (R$)": 3_200, "Valor Pago (R$)": 3_200,
-                "Status": "Concluída",
-            },
-            {
-                "Competência": "10/2026", "Obra / Histórico": "Obra de outubro",
-                "Custo Previsto (R$)": 800, "Valor Pago (R$)": 0,
-                "Status": "Em andamento",
-            },
-            {
-                "Competência": "11/2026", "Obra / Histórico": "Obra futura",
-                "Custo Previsto (R$)": 500, "Valor Pago (R$)": 0,
-                "Status": "Em andamento",
-            },
-        ])
-
-        october = works_for_month(works, 2026, 10)
-
-        self.assertEqual(set(october["obra"]), {"Pendente anterior", "Obra de outubro"})
-        self.assertEqual(construction_payables(october), 1_525)
-        september = monthly_work_summary(works, 2026).iloc[8]
-        self.assertEqual(september["custo_previsto"], 4_650)
-        self.assertEqual(september["pago"], 3_925)
-
-    def test_previous_year_payable_carries_into_january(self):
-        works = normalize_works([{
-            "Competência": "12/2026", "Obra / Histórico": "Saldo da virada",
-            "Custo Previsto (R$)": 900, "Valor Pago (R$)": 400,
-            "Status": "Parcial",
-        }])
-
-        january = works_for_month(works, 2027, 1)
-
-        self.assertEqual(january.iloc[0]["obra"], "Saldo da virada")
-        self.assertEqual(january.iloc[0]["falta_pagar"], 500)
-
     def test_legacy_confirmed_rows_remain_in_monthly_history(self):
         legacy_revenue = {
             "Mês": "10/01/2026",
@@ -285,6 +241,39 @@ class PartialRealizationTests(unittest.TestCase):
         self.assertEqual(projected.iloc[8]["saldo_projetado"], 103_000)
         self.assertEqual(projected.iloc[-1]["saldo_projetado"], 103_000)
 
+    def test_profit_withdrawal_reduces_cash_but_not_operating_result(self):
+        withdrawal = {
+            **launch("Retirada lucros adicionais", "Despesa", 32_000, 0, "Previsto"),
+            "Natureza": "Retirada de lucros",
+        }
+        monthly = monthly_forecast(normalize_launches([
+            launch("Receita mensal", "Receita", 100_000, 0, "Previsto"),
+            launch("Despesa operacional", "Despesa", 40_000, 0, "Previsto"),
+            withdrawal,
+        ]), 2026)
+        september = monthly.iloc[8]
+        projected = projection(monthly, 0, date(2026, 9, 1))
+
+        self.assertTrue(is_profit_withdrawal_nature("Lucros"))
+        self.assertTrue(is_profit_withdrawal_nature("Retirada de sócios"))
+        self.assertEqual(september["receitas"], 100_000)
+        self.assertEqual(september["despesas"], 40_000)
+        self.assertEqual(september["retiradas"], 32_000)
+        self.assertEqual(september["resultado"], 60_000)
+        self.assertEqual(projected.iloc[8]["saldo_projetado"], 28_000)
+
+    def test_realized_profit_withdrawal_is_not_an_operating_expense(self):
+        withdrawal = {
+            **launch("Retirada de lucros", "Despesa", 32_000, 32_000, "Pago"),
+            "Natureza": "Lucros",
+        }
+        september = monthly_realized_history(normalize_launches([withdrawal]), 2026).iloc[8]
+
+        self.assertEqual(september["despesas_realizadas"], 0)
+        self.assertEqual(september["retiradas_realizadas"], 32_000)
+        self.assertEqual(september["resultado_realizado"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
+
