@@ -38,13 +38,16 @@ from finance_core import (
     new_id,
     normalize_label,
     normalize_launches,
+    normalize_withdrawals,
     normalize_works,
     open_launches,
     parse_money,
     projection,
     realization_tracking,
     safe_day,
+    suggest_next_year_forecast,
     variance,
+    withdrawal_summary,
 )
 
 
@@ -55,7 +58,7 @@ MAIN_HEADERS = [
     "Valor (R$)", "Status", "Observação", "ID", "Competência", "Vencimento",
     "Valor Previsto (R$)", "Valor Realizado (R$)", "Data Quitação", "Conta",
     "Natureza", "Série ID", "Criado Em", "Atualizado Em", "Moeda",
-    "Valor na Moeda", "Cotação Utilizada", "Percentual Considerado",
+    "Valor na Moeda", "Cotação Utilizada", "Percentual Considerado", "Revisão ID",
 ]
 BALANCE_HEADERS = ["Conta", "Valor"]
 WORK_HEADERS = [
@@ -69,6 +72,22 @@ QUOTE_HEADERS = ["Data", "Moeda", "Compra", "Venda", "Fonte", "Consultado Em"]
 CLOSE_HEADERS = [
     "Competência", "Saldo Bancário", "Receitas Pendentes", "Despesas Pendentes",
     "Saldo Projetado", "Cauções", "Reserva", "Distribuível", "Fechado Em",
+]
+FORECAST_REVIEW_HEADERS = [
+    "Revisão ID", "Ano Origem", "Ano Destino", "Chave Origem", "Decisão",
+    "Tipo", "Categoria", "Lançamento", "Envolvido", "Conta", "Natureza",
+    "Valor Sugerido (R$)", "Periodicidade", "Primeiro Vencimento",
+    "Ocorrências", "Dia do Vencimento", "Observação", "Status",
+    "Criado Em", "Atualizado Em",
+]
+GOAL_HEADERS = [
+    "ID", "Ano", "Data da Reunião", "Meta", "Tipo de Apuração",
+    "Filtro do Lançamento", "Valor da Meta (R$)", "Valor Manual Atingido (R$)",
+    "Criado Em", "Atualizado Em",
+]
+WITHDRAWAL_HEADERS = [
+    "Competência", "Pró-labore (R$)", "Retirada de Lucros (R$)",
+    "Retirada Adicional (R$)", "Observação", "Atualizado Em",
 ]
 
 DEFAULT_PARAMETERS = {
@@ -342,6 +361,56 @@ def ensure_initial_work_rows(ws) -> None:
     } for description, charged, cost, paid, status in initial])
 
 
+def ensure_initial_goals(ws) -> None:
+    records = load_records(ws)
+    existing = {
+        (str(record.get("Ano") or "").strip(), normalize_label(record.get("Meta")))
+        for record in records
+    }
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+    initial = [
+        ("Faturamento", "Receitas realizadas no ano", "", 1_800_000.0),
+        ("Aluguel Mensal", "Receitas realizadas no mês", "aluguel", 100_000.0),
+    ]
+    rows = []
+    for goal_name, calculation_type, launch_filter, target in initial:
+        if ("2026", normalize_label(goal_name)) in existing:
+            continue
+        rows.append({
+            "ID": new_id("META"), "Ano": 2026, "Data da Reunião": "23/10/2025",
+            "Meta": goal_name, "Tipo de Apuração": calculation_type,
+            "Filtro do Lançamento": launch_filter, "Valor da Meta (R$)": format_brl(target),
+            "Valor Manual Atingido (R$)": "", "Criado Em": now, "Atualizado Em": now,
+        })
+    append_dicts(ws, GOAL_HEADERS, rows)
+
+
+def ensure_withdrawal_year(ws, year: int) -> None:
+    records = load_records(ws)
+    existing = {
+        str(record.get("Competência") or "").strip()
+        for record in records
+    }
+    profit_2026 = [44_000, 52_000, 50_000, 40_000, 44_000, 32_000, 26_000, 30_000, 32_000, 0, 0, 0]
+    additional_2026 = [122_200, 37_000, 38_450, 1_250, 0, 26_800, 93_550, 27_800, 0, 0, 0, 0]
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+    rows = []
+    for month in range(1, 13):
+        competence = f"{month:02d}/{int(year)}"
+        if competence in existing:
+            continue
+        is_initial_2026 = int(year) == 2026
+        rows.append({
+            "Competência": competence,
+            "Pró-labore (R$)": format_brl(28_000) if is_initial_2026 and month <= 9 else "",
+            "Retirada de Lucros (R$)": format_brl(profit_2026[month - 1]) if is_initial_2026 and profit_2026[month - 1] else "",
+            "Retirada Adicional (R$)": format_brl(additional_2026[month - 1]) if is_initial_2026 and additional_2026[month - 1] else "",
+            "Observação": "Valores históricos informados pelo usuário." if is_initial_2026 and month <= 9 else "",
+            "Atualizado Em": now,
+        })
+    append_dicts(ws, WITHDRAWAL_HEADERS, rows)
+
+
 def sync_construction_balance(ws, amount: float) -> None:
     records = load_records(ws)
     for row_number, record in enumerate(records, start=2):
@@ -360,6 +429,28 @@ def display_money_table(frame: pd.DataFrame, columns: list[str]) -> None:
     st.dataframe(view, use_container_width=True, hide_index=True)
 
 
+def achieved_goal_value(goal: dict, launches_df: pd.DataFrame, year: int, reference: date) -> float:
+    calculation_type = str(goal.get("Tipo de Apuração") or "Manual")
+    if calculation_type == "Manual":
+        return parse_money(goal.get("Valor Manual Atingido (R$)"))
+    if launches_df.empty:
+        return 0.0
+    selected = launches_df[
+        launches_df["competencia"].notna()
+        & (launches_df["competencia"].dt.year == year)
+        & (launches_df["tipo"] == "Receita")
+    ].copy()
+    launch_filter = normalize_label(goal.get("Filtro do Lançamento"))
+    if launch_filter:
+        selected = selected[selected["historico"].map(normalize_label).str.contains(launch_filter, regex=False)]
+    if calculation_type == "Receitas realizadas no mês":
+        if year > reference.year:
+            return 0.0
+        month = reference.month if year == reference.year else 12
+        selected = selected[selected["competencia"].dt.month == month]
+    return float(selected["realizado"].sum())
+
+
 login()
 
 try:
@@ -375,6 +466,9 @@ try:
         500,
     )
     ws_works = worksheet("Obras", WORK_HEADERS, 1000)
+    ws_forecast_review = worksheet("Revisao_Forecast", FORECAST_REVIEW_HEADERS, 2000)
+    ws_goals = worksheet("Metas_Anuais", GOAL_HEADERS, 500)
+    ws_withdrawals = worksheet("Retiradas_Socios", WITHDRAWAL_HEADERS, 1000)
 except Exception as exc:
     st.error(f"Não foi possível abrir a base Financeiro_MRC: {exc}")
     st.stop()
@@ -384,7 +478,10 @@ launches = normalize_launches(records)
 history_launches = normalize_launches(load_records(ws_history))
 ensure_balance_rows(ws_balances)
 ensure_initial_work_rows(ws_works)
+ensure_initial_goals(ws_goals)
+ensure_withdrawal_year(ws_withdrawals, 2026)
 works = normalize_works(load_records(ws_works))
+withdrawals = normalize_withdrawals(load_records(ws_withdrawals))
 works_payable = construction_payables(works)
 sync_construction_balance(ws_balances, works_payable)
 balances_df, brl_balance = account_balances(ws_balances)
@@ -423,9 +520,11 @@ bank_balance = brl_balance + usd_balance_brl
 with st.sidebar:
     st.image("https://raw.githubusercontent.com/mrcimoveis-coder/portal-intranet/main/logo.jpeg", width=220)
     st.caption(f"Usuário: {st.session_state.get('usuario_fin', '')}")
-    available_years = sorted(
-        {today.year, 2026, *([int(y) for y in launches["competencia"].dropna().dt.year.unique()] if not launches.empty else [])}
-    )
+    available_years = sorted({
+        2026,
+        *range(today.year, today.year + 6),
+        *([int(y) for y in launches["competencia"].dropna().dt.year.unique()] if not launches.empty else []),
+    })
     selected_year = st.selectbox("Ano do forecast", available_years, index=available_years.index(today.year) if today.year in available_years else 0)
     if st.button("Sair"):
         st.session_state.autenticado_fin = False
@@ -434,12 +533,15 @@ with st.sidebar:
 st.title("💰 Previsão financeira — MRC Imóveis")
 st.caption("O saldo bancário representa o que já aconteceu. Somente receitas e despesas ainda abertas alteram a projeção futura.")
 
-tab_summary, tab_pending, tab_launch, tab_forecast, tab_works, tab_balances, tab_history, tab_settings = st.tabs(
-    ["Resumo", "Pendências", "Novo lançamento", "Forecast", "Obras", "Saldos", "Histórico", "Configurações"]
+tab_summary, tab_pending, tab_launch, tab_forecast, tab_works, tab_withdrawals, tab_balances, tab_history, tab_settings = st.tabs(
+    ["Resumo", "Pendências", "Novo lançamento", "Forecast", "Obras", "Retiradas", "Saldos", "Histórico", "Configurações"]
 )
 
 monthly = monthly_forecast(launches, selected_year)
-projected = projection(monthly, bank_balance, today)
+is_current_year = selected_year == today.year
+projection_base = bank_balance if is_current_year else 0.0
+projection_date = today if is_current_year else date(selected_year, 1, 1)
+projected = projection(monthly, projection_base, projection_date)
 try:
     synced_caution = caution_projected_balance(selected_year)
     caution_sync_error = None
@@ -447,24 +549,91 @@ except Exception as exc:
     synced_caution = float(parameters["caucoes_protegidas"])
     caution_sync_error = str(exc)
 
-if caution_sync_error is None and abs(float(parameters["caucoes_protegidas"]) - synced_caution) > 0.005:
+if is_current_year and caution_sync_error is None and abs(float(parameters["caucoes_protegidas"]) - synced_caution) > 0.005:
     save_parameters(ws_parameters, {"caucoes_protegidas": synced_caution})
     parameters["caucoes_protegidas"] = synced_caution
 open_df = open_launches(launches)
-future_open = open_df[open_df["competencia"] >= pd.Timestamp(today.year, today.month, 1)] if not open_df.empty else open_df
+if not open_df.empty:
+    year_open = open_df[open_df["competencia"].dt.year == selected_year]
+    cutoff = pd.Timestamp(today.year, today.month, 1) if is_current_year else pd.Timestamp(selected_year, 1, 1)
+    future_open = year_open[year_open["competencia"] >= cutoff]
+else:
+    future_open = open_df
 pending_income = float(future_open.loc[future_open["tipo"] == "Receita", "pendente"].sum()) if not future_open.empty else 0.0
 pending_expense = float(future_open.loc[future_open["tipo"] == "Despesa", "pendente"].sum()) if not future_open.empty else 0.0
-year_end = float(projected.iloc[-1]["saldo_projetado"]) if not projected.empty else bank_balance
-protected = synced_caution + parameters["reserva_mrc"] + interest_reserve
-distributable = distributable_balance(year_end, protected, distribution_liabilities)
+year_end = float(projected.iloc[-1]["saldo_projetado"]) if not projected.empty else projection_base
+protected = (synced_caution + parameters["reserva_mrc"] + interest_reserve) if is_current_year else 0.0
+active_liabilities = distribution_liabilities if is_current_year else 0.0
+distributable = distributable_balance(year_end, protected, active_liabilities)
 combined_history = pd.concat([history_launches, launches], ignore_index=True) if not history_launches.empty else launches
+withdrawal_month_limit = today.month if selected_year == today.year else (12 if selected_year < today.year else 0)
+withdrawal_totals = withdrawal_summary(withdrawals, selected_year, withdrawal_month_limit, partner_count=2)
 
 with tab_summary:
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Saldos atualizados", format_brl(bank_balance))
+    c1.metric("Saldos atualizados" if is_current_year else "Saldo base do forecast", format_brl(projection_base))
     c2.metric("Receitas pendentes", format_brl(pending_income))
     c3.metric("Despesas pendentes", format_brl(pending_expense))
     c4.metric("Sobra / falta projetada", format_brl(distributable))
+    if not is_current_year:
+        st.info(
+            f"{selected_year} está separado do ano corrente. O saldo base permanece zerado até {selected_year} "
+            "se tornar o ano atual; lançamentos desse ano não alteram os cálculos do ano corrente."
+        )
+
+    goal_records = [
+        goal for goal in load_records(ws_goals)
+        if str(goal.get("Ano") or "").strip() == str(selected_year)
+    ]
+    st.subheader(f"Metas de {selected_year}")
+    if not goal_records:
+        st.info("Ainda não há metas cadastradas para este ano. Cadastre-as na aba Configurações.")
+    else:
+        meeting_dates = sorted({str(goal.get("Data da Reunião") or "").strip() for goal in goal_records if goal.get("Data da Reunião")})
+        if meeting_dates:
+            st.caption("Definidas na reunião de " + ", ".join(meeting_dates))
+        goal_view = []
+        for goal in goal_records:
+            target = parse_money(goal.get("Valor da Meta (R$)"))
+            achieved = achieved_goal_value(goal, combined_history, selected_year, today)
+            goal_view.append({
+                "Meta": str(goal.get("Meta") or ""),
+                "Período": "Mensal" if goal.get("Tipo de Apuração") == "Receitas realizadas no mês" else "Anual",
+                "Valor da meta": target,
+                "Atingido": achieved,
+                "Falta atingir": max(target - achieved, 0.0),
+                "% atingido": (achieved / target * 100.0) if target > 0 else 0.0,
+            })
+        goal_frame = pd.DataFrame(goal_view)
+        st.dataframe(
+            goal_frame,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Valor da meta": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Atingido": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Falta atingir": st.column_config.NumberColumn(format="R$ %.2f"),
+                "% atingido": st.column_config.ProgressColumn(min_value=0.0, max_value=100.0, format="%.1f%%"),
+            },
+        )
+
+    st.subheader(f"Retiradas dos sócios em {selected_year}")
+    if withdrawal_month_limit == 0:
+        st.info("O acompanhamento das retiradas começará quando este ano se tornar o ano corrente.")
+    else:
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("Pró-labore", format_brl(withdrawal_totals["pro_labore"]))
+        r2.metric("Retirada de lucros", format_brl(withdrawal_totals["lucros"]))
+        r3.metric("Retiradas adicionais", format_brl(withdrawal_totals["adicional"]))
+        r4.metric("Total retirado", format_brl(withdrawal_totals["total"]))
+        r5, r6 = st.columns(2)
+        r5.metric("Média mensal total", format_brl(withdrawal_totals["media_mensal"]))
+        r6.metric("Média por sócio / mês", format_brl(withdrawal_totals["media_socio_mes"]))
+        st.caption(
+            f"Cálculo até {MESES[int(withdrawal_totals['meses'])].title()}: "
+            f"{int(withdrawal_totals['meses'])} mês(es) e 2 sócios. "
+            "Esses valores são informativos e não reduzem novamente o saldo bancário."
+        )
 
     st.subheader("Receitas e despesas realizadas até o momento")
     current_month = pd.Timestamp(today.year, today.month, 1)
@@ -687,6 +856,172 @@ with tab_launch:
             st.success("Lançamento salvo.")
 
 with tab_forecast:
+    review_source_year = selected_year
+    review_target_year = selected_year + 1
+    st.subheader(f"Preparar forecast de {review_target_year}")
+    st.caption(
+        f"O sistema analisa {review_source_year} e cria sugestões para sua conferência. "
+        f"Nada entra em {review_target_year} antes da sua aprovação e esse forecast não altera {review_source_year}."
+    )
+    if st.button(f"Gerar sugestões para {review_target_year}", type="primary"):
+        suggestions = suggest_next_year_forecast(combined_history, review_source_year, review_target_year)
+        existing_reviews = load_records(ws_forecast_review)
+        existing_keys = {
+            str(row.get("Chave Origem") or "").strip()
+            for row in existing_reviews
+            if str(row.get("Ano Destino") or "").strip() == str(review_target_year)
+        }
+        now = datetime.now().strftime("%d/%m/%Y %H:%M")
+        review_rows = []
+        for _, suggestion in suggestions.iterrows():
+            if suggestion["origem_chave"] in existing_keys:
+                continue
+            review_rows.append({
+                "Revisão ID": new_id("REV"), "Ano Origem": review_source_year,
+                "Ano Destino": review_target_year, "Chave Origem": suggestion["origem_chave"],
+                "Decisão": "Pendente", "Tipo": suggestion["tipo"],
+                "Categoria": suggestion["categoria"], "Lançamento": suggestion["historico"],
+                "Envolvido": suggestion["envolvido"], "Conta": suggestion["conta"],
+                "Natureza": suggestion["natureza"],
+                "Valor Sugerido (R$)": format_brl(suggestion["valor_sugerido"]),
+                "Periodicidade": suggestion["periodicidade"],
+                "Primeiro Vencimento": suggestion["primeiro_vencimento"].strftime("%d/%m/%Y"),
+                "Ocorrências": int(suggestion["ocorrencias"]),
+                "Dia do Vencimento": int(suggestion["dia_vencimento"]),
+                "Observação": suggestion["observacao"], "Status": "Aguardando revisão",
+                "Criado Em": now, "Atualizado Em": now,
+            })
+        append_dicts(ws_forecast_review, FORECAST_REVIEW_HEADERS, review_rows)
+        if review_rows:
+            st.success(f"{len(review_rows)} sugestão(ões) criada(s) para revisão.")
+            st.rerun()
+        elif suggestions.empty:
+            st.warning(f"Não encontrei lançamentos operacionais de {review_source_year} para sugerir.")
+        else:
+            st.info("As sugestões deste ano já foram geradas. Você pode revisá-las abaixo.")
+
+    review_records = load_records(ws_forecast_review)
+    target_reviews = [
+        (row_number, row)
+        for row_number, row in enumerate(review_records, start=2)
+        if str(row.get("Ano Destino") or "").strip() == str(review_target_year)
+        and normalize_label(row.get("Status")) not in {"aprovado", "nao incluido"}
+    ]
+    if target_reviews:
+        review_source = pd.DataFrame([{
+            "Decisão": str(row.get("Decisão") or "Pendente"),
+            "Tipo": str(row.get("Tipo") or "Despesa"),
+            "Lançamento": str(row.get("Lançamento") or ""),
+            "Categoria": str(row.get("Categoria") or "OUTRO"),
+            "Valor sugerido": parse_money(row.get("Valor Sugerido (R$)")),
+            "Periodicidade": str(row.get("Periodicidade") or "Anual"),
+            "Primeiro vencimento": pd.to_datetime(
+                row.get("Primeiro Vencimento"), dayfirst=True, errors="coerce"
+            ).date(),
+            "Ocorrências": int(parse_money(row.get("Ocorrências")) or 1),
+            "Dia do vencimento": int(parse_money(row.get("Dia do Vencimento")) or 1),
+            "Envolvido": str(row.get("Envolvido") or ""),
+            "Conta": str(row.get("Conta") or ""),
+            "Natureza": str(row.get("Natureza") or "Operacional"),
+            "Observação": str(row.get("Observação") or ""),
+            "sheet_row": row_number, "review_id": str(row.get("Revisão ID") or ""),
+        } for row_number, row in target_reviews])
+        edited_reviews = st.data_editor(
+            review_source, use_container_width=True, hide_index=True,
+            disabled=["sheet_row", "review_id"],
+            column_config={
+                "Decisão": st.column_config.SelectboxColumn(
+                    options=["Pendente", "Aprovar", "Não incluir"], required=True,
+                ),
+                "Valor sugerido": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
+                "Tipo": st.column_config.SelectboxColumn(options=["Receita", "Despesa"], required=True),
+                "Periodicidade": st.column_config.SelectboxColumn(
+                    options=["Mensal", "Trimestral", "Semestral", "Anual"], required=True,
+                ),
+                "Primeiro vencimento": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                "Ocorrências": st.column_config.NumberColumn(min_value=1, max_value=12, step=1),
+                "Dia do vencimento": st.column_config.NumberColumn(min_value=1, max_value=31, step=1),
+                "sheet_row": None, "review_id": None,
+            },
+            key=f"forecast_review_{review_target_year}",
+        )
+        if st.button("Salvar e processar decisões", type="primary"):
+            intervals = {"Mensal": 1, "Trimestral": 3, "Semestral": 6, "Anual": 12}
+            existing_forecast_review_ids = {
+                str(row.get("Revisão ID") or "").strip() for row in load_records(ws_forecast)
+            }
+            approved = rejected = pending = invalid = 0
+            now = datetime.now().strftime("%d/%m/%Y %H:%M")
+            for _, row in edited_reviews.iterrows():
+                decision = str(row["Decisão"])
+                first_due = row["Primeiro vencimento"]
+                if isinstance(first_due, pd.Timestamp):
+                    first_due = first_due.date()
+                elif isinstance(first_due, str):
+                    parsed_due = pd.to_datetime(first_due, dayfirst=True, errors="coerce")
+                    first_due = parsed_due.date() if pd.notna(parsed_due) else None
+                value = float(row["Valor sugerido"])
+                occurrences_value = int(row["Ocorrências"])
+                interval = intervals[str(row["Periodicidade"])]
+                updates = {
+                    "Decisão": decision, "Categoria": str(row["Categoria"]).strip(),
+                    "Lançamento": str(row["Lançamento"]).strip(),
+                    "Envolvido": str(row["Envolvido"]).strip(), "Conta": str(row["Conta"]).strip(),
+                    "Natureza": str(row["Natureza"]).strip(), "Valor Sugerido (R$)": format_brl(value),
+                    "Periodicidade": str(row["Periodicidade"]),
+                    "Primeiro Vencimento": first_due.strftime("%d/%m/%Y") if first_due else "",
+                    "Ocorrências": occurrences_value,
+                    "Dia do Vencimento": safe_day(row["Dia do vencimento"]),
+                    "Observação": str(row["Observação"]).strip(), "Atualizado Em": now,
+                }
+                review_id = str(row["review_id"])
+                if decision == "Aprovar":
+                    last_due = None if first_due is None else date(
+                        first_due.year + ((first_due.month - 1 + (occurrences_value - 1) * interval) // 12),
+                        ((first_due.month - 1 + (occurrences_value - 1) * interval) % 12) + 1, 1,
+                    )
+                    if (
+                        not str(row["Lançamento"]).strip() or value <= 0 or first_due is None
+                        or first_due.year != review_target_year or last_due.year != review_target_year
+                    ):
+                        updates["Status"] = "Revisão necessária"
+                        invalid += 1
+                    elif review_id not in existing_forecast_review_ids:
+                        _, approved_rows = make_recurrence_rows(
+                            description=str(row["Lançamento"]).strip(), launch_type=str(row["Tipo"]),
+                            category=str(row["Categoria"]).strip(), involved=str(row["Envolvido"]).strip(),
+                            planned_value=value, start_date=first_due, occurrences=occurrences_value,
+                            interval_months=interval, due_day=safe_day(row["Dia do vencimento"]),
+                            account=str(row["Conta"]).strip(), nature=str(row["Natureza"]).strip(),
+                            notes=str(row["Observação"]).strip(),
+                        )
+                        for approved_row in approved_rows:
+                            approved_row["Revisão ID"] = review_id
+                        append_dicts(ws_forecast, MAIN_HEADERS, approved_rows)
+                        existing_forecast_review_ids.add(review_id)
+                        updates["Status"] = "Aprovado"
+                        approved += 1
+                    else:
+                        updates["Status"] = "Aprovado"
+                elif decision == "Não incluir":
+                    updates["Status"] = "Não incluído"
+                    rejected += 1
+                else:
+                    updates["Status"] = "Aguardando revisão"
+                    pending += 1
+                update_row(ws_forecast_review, int(row["sheet_row"]), updates)
+            if invalid:
+                st.warning(
+                    f"{invalid} sugestão(ões) precisam de ajuste. Confira valor, data e quantidade; "
+                    f"todas as ocorrências devem permanecer em {review_target_year}."
+                )
+            else:
+                st.success(f"Processado: {approved} aprovado(s), {rejected} não incluído(s) e {pending} pendente(s).")
+            st.rerun()
+    else:
+        st.info(f"Não há sugestões pendentes para {review_target_year}.")
+
+    st.markdown("---")
     st.subheader("Programar lançamentos futuros")
     st.caption("Crie uma série mensal, trimestral, semestral ou anual. Cada ocorrência poderá ser quitada ou alterada individualmente.")
     with st.form("forecast_form", clear_on_submit=True):
@@ -952,6 +1287,75 @@ with tab_works:
         ["Valor cobrado", "Valor recebido", "Custo previsto", "Valor pago", "Falta pagar", "Lucro previsto"],
     )
 
+with tab_withdrawals:
+    st.subheader(f"Retiradas dos sócios em {selected_year}")
+    st.caption(
+        "Registre aqui pró-labore, distribuição de lucros e retiradas adicionais por mês. "
+        "Este controle é histórico e não altera novamente o saldo bancário nem a projeção."
+    )
+    ensure_withdrawal_year(ws_withdrawals, selected_year)
+    selected_withdrawals = normalize_withdrawals(load_records(ws_withdrawals))
+    selected_withdrawals = selected_withdrawals[
+        selected_withdrawals["competencia"].notna()
+        & (selected_withdrawals["competencia"].dt.year == selected_year)
+    ].sort_values("competencia").reset_index(drop=True)
+    withdrawals_editor_source = pd.DataFrame({
+        "Mês": selected_withdrawals["competencia"].dt.month.map(MESES),
+        "Pró-labore": selected_withdrawals["pro_labore"].astype(float),
+        "Retirada de lucros": selected_withdrawals["lucros"].astype(float),
+        "Retirada adicional": selected_withdrawals["adicional"].astype(float),
+        "Total do mês": (
+            selected_withdrawals["pro_labore"]
+            + selected_withdrawals["lucros"]
+            + selected_withdrawals["adicional"]
+        ).astype(float),
+        "Observação": selected_withdrawals["observacao"],
+        "sheet_row": selected_withdrawals["sheet_row"].astype(int),
+    })
+    edited_withdrawals = st.data_editor(
+        withdrawals_editor_source, use_container_width=True, hide_index=True,
+        disabled=["Mês", "Total do mês", "sheet_row"],
+        column_config={
+            "Pró-labore": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
+            "Retirada de lucros": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
+            "Retirada adicional": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
+            "Total do mês": st.column_config.NumberColumn(format="R$ %.2f"),
+            "sheet_row": None,
+        },
+        key=f"withdrawals_editor_{selected_year}",
+    )
+    if st.button("Salvar retiradas", type="primary"):
+        now = datetime.now().strftime("%d/%m/%Y %H:%M")
+        for _, row in edited_withdrawals.iterrows():
+            update_row(ws_withdrawals, int(row["sheet_row"]), {
+                "Pró-labore (R$)": format_brl(float(row["Pró-labore"])),
+                "Retirada de Lucros (R$)": format_brl(float(row["Retirada de lucros"])),
+                "Retirada Adicional (R$)": format_brl(float(row["Retirada adicional"])),
+                "Observação": str(row["Observação"]).strip(),
+                "Atualizado Em": now,
+            })
+        st.success("Retiradas atualizadas.")
+        st.rerun()
+
+    selected_summary = withdrawal_summary(
+        selected_withdrawals,
+        selected_year,
+        withdrawal_month_limit,
+        partner_count=2,
+    )
+    st.subheader("Resumo acumulado")
+    if withdrawal_month_limit == 0:
+        st.info("O acumulado começará quando este ano se tornar corrente.")
+    else:
+        w1, w2, w3, w4 = st.columns(4)
+        w1.metric("Pró-labore", format_brl(selected_summary["pro_labore"]))
+        w2.metric("Lucros", format_brl(selected_summary["lucros"]))
+        w3.metric("Adicionais", format_brl(selected_summary["adicional"]))
+        w4.metric("Total", format_brl(selected_summary["total"]))
+        w5, w6 = st.columns(2)
+        w5.metric("Média mensal total", format_brl(selected_summary["media_mensal"]))
+        w6.metric("Média por sócio / mês", format_brl(selected_summary["media_socio_mes"]))
+
 with tab_balances:
     st.subheader("Reserva em dólar")
     st.caption("Informe o saldo em USD. O equivalente em reais já compõe os saldos atualizados e não entra novamente no forecast.")
@@ -1136,6 +1540,101 @@ with tab_settings:
             })
             st.toast("Configurações salvas.")
             st.rerun()
+
+    st.markdown("---")
+    st.subheader(f"Metas anuais de {selected_year}")
+    st.caption(
+        "Cadastre as metas definidas na reunião dos sócios. Cada meta fica vinculada somente ao ano selecionado."
+    )
+    selected_goal_records = [
+        (row_number, goal)
+        for row_number, goal in enumerate(load_records(ws_goals), start=2)
+        if str(goal.get("Ano") or "").strip() == str(selected_year)
+    ]
+    if selected_goal_records:
+        goals_editor_source = pd.DataFrame([{
+            "Meta": str(goal.get("Meta") or ""),
+            "Data da reunião": pd.to_datetime(
+                goal.get("Data da Reunião"), dayfirst=True, errors="coerce"
+            ).date(),
+            "Tipo de apuração": str(goal.get("Tipo de Apuração") or "Manual"),
+            "Filtro do lançamento": str(goal.get("Filtro do Lançamento") or ""),
+            "Valor da meta": parse_money(goal.get("Valor da Meta (R$)")),
+            "Valor manual atingido": parse_money(goal.get("Valor Manual Atingido (R$)")),
+            "sheet_row": row_number,
+        } for row_number, goal in selected_goal_records])
+        edited_goals = st.data_editor(
+            goals_editor_source, use_container_width=True, hide_index=True,
+            column_config={
+                "Data da reunião": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                "Tipo de apuração": st.column_config.SelectboxColumn(
+                    options=["Receitas realizadas no ano", "Receitas realizadas no mês", "Manual"],
+                    required=True,
+                ),
+                "Valor da meta": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
+                "Valor manual atingido": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
+                "sheet_row": None,
+            },
+            key=f"goals_editor_{selected_year}",
+        )
+        if st.button("Salvar metas deste ano", type="primary"):
+            now = datetime.now().strftime("%d/%m/%Y %H:%M")
+            for _, goal in edited_goals.iterrows():
+                meeting_date = goal["Data da reunião"]
+                if isinstance(meeting_date, pd.Timestamp):
+                    meeting_date = meeting_date.date()
+                update_row(ws_goals, int(goal["sheet_row"]), {
+                    "Meta": str(goal["Meta"]).strip(),
+                    "Data da Reunião": meeting_date.strftime("%d/%m/%Y"),
+                    "Tipo de Apuração": str(goal["Tipo de apuração"]),
+                    "Filtro do Lançamento": str(goal["Filtro do lançamento"]).strip(),
+                    "Valor da Meta (R$)": format_brl(float(goal["Valor da meta"])),
+                    "Valor Manual Atingido (R$)": format_brl(float(goal["Valor manual atingido"])),
+                    "Atualizado Em": now,
+                })
+            st.success("Metas atualizadas.")
+            st.rerun()
+    else:
+        st.info("Nenhuma meta cadastrada para este ano.")
+
+    with st.expander("Cadastrar nova meta"):
+        with st.form("new_annual_goal", clear_on_submit=True):
+            a, b = st.columns(2)
+            goal_name = a.text_input("Nome da meta")
+            meeting_date = b.date_input("Data da reunião", value=date(selected_year - 1, 10, 1), format="DD/MM/YYYY")
+            c, d = st.columns(2)
+            goal_calculation = c.selectbox(
+                "Tipo de apuração",
+                ["Receitas realizadas no ano", "Receitas realizadas no mês", "Manual"],
+            )
+            goal_target = d.number_input("Valor da meta", min_value=0.0, step=1000.0)
+            e, f = st.columns(2)
+            goal_filter = e.text_input(
+                "Filtro do lançamento",
+                help="Exemplo: aluguel. Deixe em branco para considerar todas as receitas.",
+            )
+            manual_achieved = f.number_input(
+                "Valor atingido manual",
+                min_value=0.0, step=1000.0,
+                disabled=goal_calculation != "Manual",
+            )
+            add_goal = st.form_submit_button("Cadastrar meta", type="primary")
+        if add_goal:
+            if not goal_name or goal_target <= 0:
+                st.error("Informe o nome e um valor de meta maior que zero.")
+            else:
+                now = datetime.now().strftime("%d/%m/%Y %H:%M")
+                append_dicts(ws_goals, GOAL_HEADERS, [{
+                    "ID": new_id("META"), "Ano": selected_year,
+                    "Data da Reunião": meeting_date.strftime("%d/%m/%Y"),
+                    "Meta": goal_name, "Tipo de Apuração": goal_calculation,
+                    "Filtro do Lançamento": goal_filter,
+                    "Valor da Meta (R$)": format_brl(goal_target),
+                    "Valor Manual Atingido (R$)": format_brl(manual_achieved) if goal_calculation == "Manual" else "",
+                    "Criado Em": now, "Atualizado Em": now,
+                }])
+                st.success("Meta cadastrada.")
+                st.rerun()
 
     st.markdown("---")
     st.subheader("Importar previsão")
