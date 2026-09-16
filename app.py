@@ -313,6 +313,25 @@ def batch_update_rows(ws, changes: list[tuple[int, dict]]) -> None:
     invalidate_records(ws)
 
 
+def delete_sheet_rows(ws, row_numbers: list[int]) -> None:
+    """Delete worksheet rows in descending contiguous groups so indexes stay valid."""
+    rows = sorted({int(row) for row in row_numbers if int(row) >= 2}, reverse=True)
+    if not rows:
+        return
+    groups: list[tuple[int, int]] = []
+    high = low = rows[0]
+    for row in rows[1:]:
+        if row == low - 1:
+            low = row
+        else:
+            groups.append((low, high))
+            high = low = row
+    groups.append((low, high))
+    for start_row, end_row in groups:
+        ws.delete_rows(start_row, end_row)
+    invalidate_records(ws)
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def ptax_sale(reference: date) -> tuple[float, date] | tuple[None, None]:
     for offset in range(0, 10):
@@ -1198,7 +1217,7 @@ with tab_forecast:
             matrix,
             use_container_width=True,
             hide_index=True,
-            num_rows="fixed",
+            num_rows="dynamic",
             disabled=["_matrix_key"],
             column_config={
                 "_matrix_key": None,
@@ -1218,31 +1237,107 @@ with tab_forecast:
         )
         st.caption(
             "Edite o nome, tipo, categoria ou envolvido para corrigir a série inteira. "
-            "A alteração em um mês afeta somente aquele mês. Valores iguais a zero deixam de afetar o forecast."
+            "A alteração em um mês afeta somente aquele mês. Use a última linha vazia para incluir um lançamento. "
+            "Para excluir uma série, remova a linha pelo controle da tabela ou apague seu conteúdo e deixe todos os meses zerados."
         )
         if st.button("Salvar alterações da matriz", type="primary"):
             original_by_key = matrix.set_index("_matrix_key")
-            edited_by_key = edited_matrix.set_index("_matrix_key")
             row_updates: dict[int, dict] = {}
             new_rows: list[dict] = []
+            rows_to_delete: list[int] = []
             warnings: list[str] = []
             changed_cells = 0
+            deleted_series = 0
+            created_series = 0
             now = datetime.now().strftime("%d/%m/%Y %H:%M")
             generated_series_ids: dict[str, str] = {}
 
             def queue_update(sheet_row: int, updates: dict) -> None:
                 row_updates.setdefault(int(sheet_row), {}).update(updates)
 
-            for matrix_key, edited_row in edited_by_key.iterrows():
+            edited_existing_keys = {
+                clean_editor_text(row.get("_matrix_key"))
+                for _, row in edited_matrix.iterrows()
+                if clean_editor_text(row.get("_matrix_key")) in original_by_key.index
+            }
+            removed_keys = set(original_by_key.index) - edited_existing_keys
+            for matrix_key in removed_keys:
+                source_rows = year_series[year_series["_matrix_key"] == matrix_key]
+                rows_to_delete.extend(source_rows["sheet_row"].astype(int).tolist())
+                deleted_series += 1
+
+            for _, edited_row in edited_matrix.iterrows():
+                matrix_key = clean_editor_text(edited_row.get("_matrix_key"))
+                month_values = {
+                    month_number: max(parse_money(edited_row.get(month_name)), 0.0)
+                    for month_number, month_name in MESES.items()
+                }
+                edited_description = clean_editor_text(edited_row.get("Lançamento"))
+                edited_category_raw = clean_editor_text(edited_row.get("Categoria"))
+                edited_involved = clean_editor_text(edited_row.get("Envolvido"))
+                row_is_empty = (
+                    not edited_description
+                    and not edited_category_raw
+                    and not edited_involved
+                    and not any(value > 0.005 for value in month_values.values())
+                )
+
+                if matrix_key not in original_by_key.index:
+                    if row_is_empty:
+                        continue
+                    edited_type = clean_editor_text(edited_row.get("Tipo"), "Despesa")
+                    edited_category = edited_category_raw or "OUTRO"
+                    if not edited_description:
+                        warnings.append("Uma nova linha não foi incluída porque está sem nome de lançamento.")
+                        continue
+                    positive_months = {
+                        month_number: value
+                        for month_number, value in month_values.items()
+                        if value > 0.005
+                    }
+                    if not positive_months:
+                        warnings.append(
+                            f"{edited_description}: informe valor em pelo menos um mês para incluir o lançamento."
+                        )
+                        continue
+                    series_id = new_id("SER")
+                    for month_number, edited_value in positive_months.items():
+                        due = date(selected_year, month_number, 1)
+                        new_row = {header: "" for header in MAIN_HEADERS}
+                        new_row.update({
+                            "Mês": MESES[month_number],
+                            "Tipo de Operação": edited_type,
+                            "Categoria": edited_category,
+                            "Corretor / Envolvido": edited_involved,
+                            "Histórico": edited_description,
+                            "Valor (R$)": format_brl(edited_value),
+                            "Status": "Previsto",
+                            "ID": new_id(),
+                            "Competência": f"{month_number:02d}/{selected_year}",
+                            "Vencimento": due.strftime("%d/%m/%Y"),
+                            "Valor Previsto (R$)": format_brl(edited_value),
+                            "Série ID": series_id,
+                            "Criado Em": now,
+                            "Atualizado Em": now,
+                            "Moeda": "BRL",
+                            "Percentual Considerado": 100,
+                        })
+                        new_rows.append(new_row)
+                    changed_cells += len(positive_months)
+                    created_series += 1
+                    continue
+
                 original_row = original_by_key.loc[matrix_key]
                 source_rows = year_series[year_series["_matrix_key"] == matrix_key].copy()
                 if source_rows.empty:
                     continue
 
                 edited_type = clean_editor_text(edited_row.get("Tipo"), "Despesa")
-                edited_description = clean_editor_text(edited_row.get("Lançamento"))
-                edited_category = clean_editor_text(edited_row.get("Categoria"), "OUTRO")
-                edited_involved = clean_editor_text(edited_row.get("Envolvido"))
+                edited_category = edited_category_raw or "OUTRO"
+                if row_is_empty:
+                    rows_to_delete.extend(source_rows["sheet_row"].astype(int).tolist())
+                    deleted_series += 1
+                    continue
                 if not edited_description:
                     warnings.append("Há uma linha sem nome de lançamento; ela não foi alterada.")
                     continue
@@ -1264,7 +1359,7 @@ with tab_forecast:
 
                 for month_number, month_name in MESES.items():
                     original_value = parse_money(original_row.get(month_name))
-                    edited_value = max(parse_money(edited_row.get(month_name)), 0.0)
+                    edited_value = month_values[month_number]
                     if abs(edited_value - original_value) <= 0.005:
                         continue
                     month_rows = source_rows[source_rows["mes_num"] == month_number]
@@ -1326,11 +1421,17 @@ with tab_forecast:
 
             batch_update_rows(ws_forecast, list(row_updates.items()))
             append_dicts(ws_forecast, MAIN_HEADERS, new_rows)
+            delete_sheet_rows(ws_forecast, rows_to_delete)
             if warnings:
                 st.warning(" ".join(dict.fromkeys(warnings)))
-            if row_updates or new_rows:
+            if row_updates or new_rows or rows_to_delete:
                 st.session_state.pop(matrix_editor_key, None)
-                st.success(f"Matriz atualizada: {changed_cells} alteração(ões) salva(s).")
+                details = [f"{changed_cells} alteração(ões) salva(s)"]
+                if created_series:
+                    details.append(f"{created_series} nova(s) linha(s) incluída(s)")
+                if deleted_series:
+                    details.append(f"{deleted_series} linha(s) excluída(s)")
+                st.success("Matriz atualizada: " + ", ".join(details) + ".")
                 st.rerun()
             elif not warnings:
                 st.info("Nenhuma alteração foi identificada na matriz.")
