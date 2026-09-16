@@ -9,6 +9,7 @@ from finance_core import (
     monthly_realized_history,
     monthly_work_summary,
     normalize_launches,
+    normalize_withdrawals,
     normalize_works,
     operational_balance_item,
     fx_balance_brl,
@@ -19,7 +20,9 @@ from finance_core import (
     is_pending_construction_adjustment_balance,
     projection,
     realization_tracking,
+    suggest_next_year_forecast,
     variance,
+    withdrawal_summary,
 )
 
 
@@ -37,6 +40,66 @@ def launch(description, launch_type, planned, actual, status):
 
 
 class PartialRealizationTests(unittest.TestCase):
+    def test_withdrawal_summary_matches_2026_example(self):
+        profit = [44_000, 52_000, 50_000, 40_000, 44_000, 32_000, 26_000, 30_000, 32_000]
+        additional = [122_200, 37_000, 38_450, 1_250, 0, 26_800, 93_550, 27_800, 0]
+        rows = [{
+            "Competência": f"{month:02d}/2026",
+            "Pró-labore (R$)": 28_000,
+            "Retirada de Lucros (R$)": profit[month - 1],
+            "Retirada Adicional (R$)": additional[month - 1],
+        } for month in range(1, 10)]
+
+        summary = withdrawal_summary(normalize_withdrawals(rows), 2026, 9, partner_count=2)
+
+        self.assertEqual(summary["pro_labore"], 252_000)
+        self.assertEqual(summary["lucros"], 350_000)
+        self.assertEqual(summary["adicional"], 347_050)
+        self.assertEqual(summary["total"], 949_050)
+        self.assertEqual(summary["media_socio_mes"], 52_725)
+
+    def test_next_year_forecast_does_not_affect_current_year(self):
+        rows = [
+            launch("Aluguel 2026", "Receita", 10_000, 0, "Previsto"),
+            {**launch("Aluguel 2027", "Receita", 20_000, 0, "Previsto"), "Competência": "01/2027"},
+        ]
+        normalized = normalize_launches(rows)
+
+        self.assertEqual(monthly_forecast(normalized, 2026)["receitas"].sum(), 10_000)
+        self.assertEqual(monthly_forecast(normalized, 2027)["receitas"].sum(), 20_000)
+
+    def test_suggests_monthly_series_using_latest_planned_value(self):
+        rows = []
+        for month in range(1, 13):
+            value = 1_000 if month < 7 else 800
+            rows.append({
+                **launch("DF Imóveis", "Despesa", value, 0, "Previsto"),
+                "Competência": f"{month:02d}/2026",
+                "Vencimento": f"10/{month:02d}/2026",
+                "Categoria": "Administrativo",
+                "Natureza": "Operacional",
+            })
+        suggestion = suggest_next_year_forecast(normalize_launches(rows), 2026, 2027).iloc[0]
+
+        self.assertEqual(suggestion["periodicidade"], "Mensal")
+        self.assertEqual(suggestion["ocorrencias"], 12)
+        self.assertEqual(suggestion["valor_sugerido"], 800)
+        self.assertEqual(suggestion["primeiro_vencimento"], date(2027, 1, 10))
+
+    def test_suggests_single_january_expense_as_annual(self):
+        row = {
+            **launch("CRECI DF anuidades", "Despesa", 2_500, 2_500, "Pago"),
+            "Competência": "01/2026",
+            "Vencimento": "20/01/2026",
+            "Categoria": "Taxas",
+            "Natureza": "Operacional",
+        }
+        suggestion = suggest_next_year_forecast(normalize_launches([row]), 2026, 2027).iloc[0]
+
+        self.assertEqual(suggestion["periodicidade"], "Anual")
+        self.assertEqual(suggestion["ocorrencias"], 1)
+        self.assertEqual(suggestion["primeiro_vencimento"], date(2027, 1, 20))
+
     def test_works_calculate_profit_and_open_supplier_balance(self):
         rows = [
             {
