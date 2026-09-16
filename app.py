@@ -154,6 +154,38 @@ def login() -> None:
     st.stop()
 
 
+def clean_editor_text(value: object, default: str = "") -> str:
+    """Return clean text for optional cells edited in a Streamlit table."""
+    if value is None:
+        return default
+    try:
+        if pd.isna(value):
+            return default
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    if normalize_label(text) in {"", "none", "nan", "nat"}:
+        return default
+    return text
+
+
+def clean_editor_date(value: object) -> date | None:
+    """Convert an optional editor value to date without raising on blank cells."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    parsed = pd.to_datetime(value, dayfirst=True, errors="coerce")
+    return parsed.date() if pd.notna(parsed) else None
+
+
 @st.cache_resource
 def spreadsheet():
     scopes = [
@@ -954,22 +986,20 @@ with tab_forecast:
     ]
     if target_reviews:
         review_source = pd.DataFrame([{
-            "Decisão": str(row.get("Decisão") or "Pendente"),
-            "Tipo": str(row.get("Tipo") or "Despesa"),
-            "Lançamento": str(row.get("Lançamento") or ""),
-            "Categoria": str(row.get("Categoria") or "OUTRO"),
+            "Decisão": clean_editor_text(row.get("Decisão"), "Pendente"),
+            "Tipo": clean_editor_text(row.get("Tipo"), "Despesa"),
+            "Lançamento": clean_editor_text(row.get("Lançamento")),
+            "Categoria": clean_editor_text(row.get("Categoria"), "OUTRO"),
             "Valor sugerido": parse_money(row.get("Valor Sugerido (R$)")),
-            "Periodicidade": str(row.get("Periodicidade") or "Anual"),
-            "Primeiro vencimento": pd.to_datetime(
-                row.get("Primeiro Vencimento"), dayfirst=True, errors="coerce"
-            ).date(),
+            "Periodicidade": clean_editor_text(row.get("Periodicidade"), "Anual"),
+            "Primeiro vencimento": clean_editor_date(row.get("Primeiro Vencimento")),
             "Ocorrências": int(parse_money(row.get("Ocorrências")) or 1),
             "Dia do vencimento": int(parse_money(row.get("Dia do Vencimento")) or 1),
-            "Envolvido": str(row.get("Envolvido") or ""),
-            "Conta": str(row.get("Conta") or ""),
-            "Natureza": str(row.get("Natureza") or "Operacional"),
-            "Observação": str(row.get("Observação") or ""),
-            "sheet_row": row_number, "review_id": str(row.get("Revisão ID") or ""),
+            "Envolvido": clean_editor_text(row.get("Envolvido")),
+            "Conta": clean_editor_text(row.get("Conta")),
+            "Natureza": clean_editor_text(row.get("Natureza"), "Operacional"),
+            "Observação": clean_editor_text(row.get("Observação")),
+            "sheet_row": row_number, "review_id": clean_editor_text(row.get("Revisão ID")),
         } for row_number, row in target_reviews])
         edited_reviews = st.data_editor(
             review_source, use_container_width=True, hide_index=True,
@@ -1004,47 +1034,55 @@ with tab_forecast:
             review_changes = []
             approved_forecast_rows = []
             for _, row in edited_reviews.iterrows():
-                decision = str(row["Decisão"])
-                first_due = row["Primeiro vencimento"]
-                if isinstance(first_due, pd.Timestamp):
-                    first_due = first_due.date()
-                elif isinstance(first_due, str):
-                    parsed_due = pd.to_datetime(first_due, dayfirst=True, errors="coerce")
-                    first_due = parsed_due.date() if pd.notna(parsed_due) else None
-                value = float(row["Valor sugerido"])
-                occurrences_value = int(row["Ocorrências"])
-                interval = intervals[str(row["Periodicidade"])]
+                decision = clean_editor_text(row.get("Decisão"), "Pendente")
+                launch_type = clean_editor_text(row.get("Tipo"), "Despesa")
+                description = clean_editor_text(row.get("Lançamento"))
+                category = clean_editor_text(row.get("Categoria"), "OUTRO")
+                involved = clean_editor_text(row.get("Envolvido"))
+                account = clean_editor_text(row.get("Conta"))
+                nature = clean_editor_text(row.get("Natureza"), "Operacional")
+                notes = clean_editor_text(row.get("Observação"))
+                periodicity = clean_editor_text(row.get("Periodicidade"), "Anual")
+                first_due = clean_editor_date(row.get("Primeiro vencimento"))
+                value = parse_money(row.get("Valor sugerido"))
+                occurrences_raw = parse_money(row.get("Ocorrências"))
+                occurrences_value = int(occurrences_raw) if occurrences_raw >= 1 else 1
+                due_day_raw = parse_money(row.get("Dia do vencimento"))
+                due_day = safe_day(int(due_day_raw)) if due_day_raw >= 1 else 1
+                interval = intervals.get(periodicity, 12)
                 updates = {
-                    "Decisão": decision, "Categoria": str(row["Categoria"]).strip(),
-                    "Lançamento": str(row["Lançamento"]).strip(),
-                    "Envolvido": str(row["Envolvido"]).strip(), "Conta": str(row["Conta"]).strip(),
-                    "Natureza": str(row["Natureza"]).strip(), "Valor Sugerido (R$)": format_brl(value),
-                    "Periodicidade": str(row["Periodicidade"]),
+                    "Decisão": decision, "Categoria": category,
+                    "Lançamento": description,
+                    "Envolvido": involved, "Conta": account,
+                    "Natureza": nature, "Valor Sugerido (R$)": format_brl(value),
+                    "Periodicidade": periodicity,
                     "Primeiro Vencimento": first_due.strftime("%d/%m/%Y") if first_due else "",
-                    "Ocorrências": occurrences_value,
-                    "Dia do Vencimento": safe_day(row["Dia do vencimento"]),
-                    "Observação": str(row["Observação"]).strip(), "Atualizado Em": now,
+                    "Ocorrências": int(occurrences_raw) if occurrences_raw >= 1 else "",
+                    "Dia do Vencimento": int(due_day_raw) if due_day_raw >= 1 else "",
+                    "Observação": notes, "Atualizado Em": now,
                 }
-                review_id = str(row["review_id"])
+                review_id = clean_editor_text(row.get("review_id"))
                 if decision == "Aprovar":
                     last_due = None if first_due is None else date(
                         first_due.year + ((first_due.month - 1 + (occurrences_value - 1) * interval) // 12),
                         ((first_due.month - 1 + (occurrences_value - 1) * interval) % 12) + 1, 1,
                     )
                     if (
-                        not str(row["Lançamento"]).strip() or value <= 0 or first_due is None
+                        not description or value <= 0 or first_due is None
+                        or not 1 <= occurrences_raw <= 12 or periodicity not in intervals
+                        or not 1 <= due_day_raw <= 31
                         or first_due.year != review_target_year or last_due.year != review_target_year
                     ):
                         updates["Status"] = "Revisão necessária"
                         invalid += 1
                     elif review_id not in existing_forecast_review_ids:
                         _, approved_rows = make_recurrence_rows(
-                            description=str(row["Lançamento"]).strip(), launch_type=str(row["Tipo"]),
-                            category=str(row["Categoria"]).strip(), involved=str(row["Envolvido"]).strip(),
+                            description=description, launch_type=launch_type,
+                            category=category, involved=involved,
                             planned_value=value, start_date=first_due, occurrences=occurrences_value,
-                            interval_months=interval, due_day=safe_day(row["Dia do vencimento"]),
-                            account=str(row["Conta"]).strip(), nature=str(row["Natureza"]).strip(),
-                            notes=str(row["Observação"]).strip(),
+                            interval_months=interval, due_day=due_day,
+                            account=account, nature=nature,
+                            notes=notes,
                         )
                         for approved_row in approved_rows:
                             approved_row["Revisão ID"] = review_id
