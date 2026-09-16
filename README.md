@@ -19,6 +19,10 @@ Aplicativo Streamlit integrado ao Google Sheets `Financeiro_MRC`.
 - Ao encerrar um lançamento, o valor previsto deixa de afetar a projeção, mesmo que o valor final seja diferente.
 - O valor realizado permanece no histórico para mostrar o andamento e as diferenças finais.
 - O forecast gera ocorrências mensais, trimestrais, semestrais ou anuais para qualquer ano.
+- O sistema sugere o forecast do ano seguinte com base no ano selecionado. Cada sugestão pode ser ajustada, aprovada ou recusada antes de virar lançamento.
+- Os anos são isolados: lançamentos de 2027 não alteram pendências, saldos ou sobra/falta de 2026. Na virada do calendário, o novo ano passa a ser aberto automaticamente como ano corrente.
+- As metas definidas nas reuniões dos sócios ficam vinculadas ao respectivo ano e mostram o valor atingido com base nas receitas realizadas ou em uma apuração manual.
+- A aba Retiradas registra por mês o pró-labore, a distribuição de lucros e as retiradas adicionais, com total e média por sócio. É um controle histórico e não reduz novamente o saldo bancário.
 - O Histórico preserva o consolidado mensal de receitas e despesas realizadas e os lançamentos antigos ainda pendentes.
 - Lançamentos em dólar podem utilizar automaticamente a PTAX de venda do Banco Central.
 
