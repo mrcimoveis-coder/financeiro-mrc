@@ -201,6 +201,23 @@ def construction_payables(works: pd.DataFrame) -> float:
     return float(works["falta_pagar"].sum())
 
 
+def works_for_month(works: pd.DataFrame, year: int, month: int) -> pd.DataFrame:
+    """Return works from the selected month plus older supplier payables.
+
+    The original competence is preserved so historical monthly totals do not
+    change. Older rows are only carried forward while they still have a
+    supplier balance to pay.
+    """
+    if works.empty:
+        return works.copy()
+    reference = pd.Timestamp(int(year), int(month), 1)
+    competence = works["competencia"]
+    active = works["status"] != "Cancelada"
+    current_month = competence == reference
+    older_payable = (competence < reference) & (works["falta_pagar"] > 0.005)
+    return works[competence.notna() & active & (current_month | older_payable)].copy()
+
+
 def monthly_work_summary(works: pd.DataFrame, year: int) -> pd.DataFrame:
     months = pd.DataFrame({"competencia": pd.date_range(f"{year}-01-01", f"{year}-12-01", freq="MS")})
     months["mes"] = months["competencia"].dt.month.map(MESES)
@@ -589,4 +606,3 @@ def safe_day(value: int) -> int:
 
 def clean_key(value: str) -> str:
     return re.sub(r"[^a-z0-9_]+", "_", str(value).strip().lower()).strip("_")
-
