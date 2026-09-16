@@ -1937,11 +1937,31 @@ with tab_balances:
             st.info(f"{label}: {format_brl(amount)}. Este valor {direction} a sobra disponível para distribuição.")
     st.caption("Acertos de obras pendentes é calculado na aba Obras e não pode ser alterado manualmente aqui.")
     edit = balances_df[~balances_df["Conta"].map(is_pending_construction_adjustment_balance)][BALANCE_HEADERS].copy()
-    edited = st.data_editor(edit, use_container_width=True, hide_index=True, num_rows="dynamic")
+    edit["Valor"] = edit["Valor"].map(
+        lambda value: format_brl(parse_money(value)) if str(value).strip() else ""
+    )
+    edited = st.data_editor(
+        edit,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",
+        column_config={
+            "Valor": st.column_config.TextColumn(
+                "Valor",
+                help="Você pode digitar somente o número. Depois de salvar, ele será exibido como R$ 1.234,56.",
+            ),
+        },
+    )
     if st.button("Salvar todos os saldos", type="primary"):
         now = datetime.now().strftime("%d/%m/%Y às %H:%M")
         ws_balances.clear()
-        saved_balances = edited.fillna("").values.tolist()
+        saved_balances = []
+        for _, balance in edited.fillna("").iterrows():
+            raw_value = str(balance["Valor"]).strip()
+            saved_balances.append([
+                str(balance["Conta"]).strip(),
+                format_brl(parse_money(raw_value)) if raw_value else "",
+            ])
         saved_balances.append(["Acertos de obras pendentes", format_brl(works_payable)])
         ws_balances.update("A1", [BALANCE_HEADERS] + saved_balances, value_input_option="USER_ENTERED")
         st.success(f"Saldos atualizados em {now}.")
