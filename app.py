@@ -10,7 +10,6 @@ from datetime import date, datetime, timedelta
 
 import gspread
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 from google.oauth2.service_account import Credentials
 
@@ -467,11 +466,13 @@ with tab_summary:
     c3.metric("Despesas pendentes", format_brl(pending_expense))
     c4.metric("Sobra / falta projetada", format_brl(distributable))
 
-    st.subheader("Receitas e despesas realizadas - meses anteriores")
-    previous_month = pd.Timestamp(today.year, today.month, 1) - pd.offsets.MonthBegin(1)
+    st.subheader("Receitas e despesas realizadas até o momento")
+    current_month = pd.Timestamp(today.year, today.month, 1)
     quick_history = monthly_realized_history(combined_history, selected_year)
     if selected_year == today.year:
-        quick_history = quick_history[quick_history["competencia"] <= previous_month]
+        quick_history = quick_history[quick_history["competencia"] <= current_month]
+    elif selected_year > today.year:
+        quick_history = quick_history.iloc[0:0]
     quick_history_view = quick_history[[
         "mes", "receitas_realizadas", "despesas_realizadas", "resultado_realizado"
     ]].rename(columns={
@@ -480,28 +481,46 @@ with tab_summary:
         "despesas_realizadas": "Despesas realizadas",
         "resultado_realizado": "Resultado realizado",
     })
-    display_money_table(
-        quick_history_view,
-        ["Receitas realizadas", "Despesas realizadas", "Resultado realizado"],
-    )
+    if quick_history_view.empty:
+        st.info("Ainda não existem valores realizados neste ano.")
+    else:
+        total_realized = pd.DataFrame([{
+            "Mês": "TOTAL REALIZADO",
+            "Receitas realizadas": quick_history_view["Receitas realizadas"].sum(),
+            "Despesas realizadas": quick_history_view["Despesas realizadas"].sum(),
+            "Resultado realizado": quick_history_view["Resultado realizado"].sum(),
+        }])
+        quick_history_view = pd.concat([quick_history_view, total_realized], ignore_index=True)
+        display_money_table(
+            quick_history_view,
+            ["Receitas realizadas", "Despesas realizadas", "Resultado realizado"],
+        )
     st.caption("O detalhamento completo continua disponível na aba Histórico.")
 
     st.markdown('<div class="status-note">Ao quitar um lançamento, ele deixa de afetar a projeção. O valor realizado fica apenas no histórico, pois o débito ou crédito já estará refletido no saldo bancário atualizado.</div>', unsafe_allow_html=True)
-    st.subheader(f"Projeção mensal de {selected_year}")
-    fig = go.Figure()
-    fig.add_bar(x=projected["mes"], y=projected["receitas"], name="Receitas pendentes", marker_color="#2e7d32")
-    fig.add_bar(x=projected["mes"], y=projected["despesas"], name="Despesas pendentes", marker_color="#c4001a")
-    fig.add_scatter(x=projected["mes"], y=projected["saldo_projetado"], name="Saldo projetado", mode="lines+markers", line={"color": "#8064a2", "width": 3}, yaxis="y2")
-    fig.update_layout(
-        barmode="group", height=460, legend={"orientation": "h"}, margin={"l": 20, "r": 20, "t": 20, "b": 20},
-        yaxis={"title": "Movimentação"}, yaxis2={"title": "Saldo", "overlaying": "y", "side": "right"},
+    st.subheader(f"Valores que ainda faltam em {selected_year}")
+    remaining_view = projected[projected["aplicavel"]][["mes", "receitas", "despesas", "resultado"]].rename(
+        columns={
+            "mes": "Mês",
+            "receitas": "Receitas a receber",
+            "despesas": "Despesas a pagar",
+            "resultado": "Resultado pendente",
+        }
     )
-    st.plotly_chart(fig, use_container_width=True)
-
-    view = projected[["mes", "receitas", "despesas", "resultado", "saldo_projetado"]].rename(
-        columns={"mes": "Mês", "receitas": "Receitas", "despesas": "Despesas", "resultado": "Resultado", "saldo_projetado": "Saldo projetado"}
-    )
-    display_money_table(view, ["Receitas", "Despesas", "Resultado", "Saldo projetado"])
+    if remaining_view.empty:
+        st.info("Não existem meses futuros para este ano.")
+    else:
+        total_remaining = pd.DataFrame([{
+            "Mês": "TOTAL PENDENTE",
+            "Receitas a receber": remaining_view["Receitas a receber"].sum(),
+            "Despesas a pagar": remaining_view["Despesas a pagar"].sum(),
+            "Resultado pendente": remaining_view["Resultado pendente"].sum(),
+        }])
+        remaining_view = pd.concat([remaining_view, total_remaining], ignore_index=True)
+        display_money_table(
+            remaining_view,
+            ["Receitas a receber", "Despesas a pagar", "Resultado pendente"],
+        )
 
 with tab_pending:
     st.subheader("Lançamentos do mês")
