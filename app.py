@@ -1173,6 +1173,33 @@ with tab_forecast:
         )
         display_money_table(matrix, list(MESES.values()))
 
+        st.subheader(f"Resumo mensal do forecast de {selected_year}")
+        st.caption(
+            "Os valores abaixo vêm dos mesmos lançamentos da matriz e são atualizados "
+            "sempre que uma receita ou despesa é alterada."
+        )
+        monthly_summary = monthly[["mes", "receitas", "despesas", "resultado"]].rename(
+            columns={
+                "mes": "Mês",
+                "receitas": "Receitas previstas",
+                "despesas": "Despesas previstas",
+                "resultado": "Resultado previsto",
+            }
+        )
+        display_money_table(
+            monthly_summary,
+            ["Receitas previstas", "Despesas previstas", "Resultado previsto"],
+        )
+
+        annual_income = float(monthly["receitas"].sum())
+        annual_expense = float(monthly["despesas"].sum())
+        annual_result = annual_income - annual_expense
+        st.subheader(f"Fechamento anual de {selected_year}")
+        total_income, total_expense, total_result = st.columns(3)
+        total_income.metric("Receitas previstas no ano", format_brl(annual_income))
+        total_expense.metric("Despesas previstas no ano", format_brl(annual_expense))
+        total_result.metric("Resultado previsto no ano", format_brl(annual_result))
+
     st.subheader("Alterar valores a partir de um mês")
     editable_series = year_series[year_series["serie_id"].astype(str).str.strip() != ""] if not year_series.empty else year_series
     if editable_series.empty:
