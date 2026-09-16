@@ -1676,10 +1676,9 @@ with tab_works:
                 value=date(selected_year, work_month, 1),
                 format="DD/MM/YYYY",
             )
-            d, e, f = st.columns(3)
+            d, e = st.columns(2)
             work_charged = d.number_input("Valor cobrado", min_value=0.0, step=100.0)
-            work_received = e.number_input("Valor recebido", min_value=0.0, step=100.0)
-            work_cost = f.number_input("Custo previsto do prestador", min_value=0.0, step=100.0)
+            work_cost = e.number_input("Custo previsto do prestador", min_value=0.0, step=100.0)
             g, h, i = st.columns(3)
             work_paid = g.number_input("Valor já pago", min_value=0.0, step=100.0)
             work_provider = h.text_input("Prestador")
@@ -1693,7 +1692,7 @@ with tab_works:
                 st.error("Informe o valor cobrado ou o custo previsto.")
             else:
                 status = "Concluída" if work_cost > 0 and work_paid >= work_cost else (
-                    "Parcial" if work_paid > 0 or work_received > 0 else "Em andamento"
+                    "Parcial" if work_paid > 0 else "Em andamento"
                 )
                 now = datetime.now().strftime("%d/%m/%Y %H:%M")
                 append_dicts(ws_works, WORK_HEADERS, [{
@@ -1702,7 +1701,7 @@ with tab_works:
                     "Obra / Histórico": work_description.strip(),
                     "Locador / Cliente": work_client.strip(),
                     "Valor Cobrado (R$)": format_brl(work_charged),
-                    "Valor Recebido (R$)": format_brl(work_received),
+                    "Valor Recebido (R$)": "",
                     "Prestador": work_provider.strip(),
                     "PIX do Prestador": work_pix.strip(),
                     "Custo Previsto (R$)": format_brl(work_cost),
@@ -1722,15 +1721,15 @@ with tab_works:
 
     st.subheader(f"Resultado mensal das obras em {selected_year}")
     work_history_view = work_monthly[[
-        "mes", "cobrado", "recebido", "custo_previsto", "pago", "falta_pagar", "lucro_previsto"
+        "mes", "cobrado", "custo_previsto", "pago", "falta_pagar", "lucro_previsto"
     ]].rename(columns={
-        "mes": "Mês", "cobrado": "Valor cobrado", "recebido": "Valor recebido",
+        "mes": "Mês", "cobrado": "Valor cobrado",
         "custo_previsto": "Custo previsto", "pago": "Valor pago",
         "falta_pagar": "Falta pagar", "lucro_previsto": "Lucro previsto",
     })
     display_money_table(
         work_history_view,
-        ["Valor cobrado", "Valor recebido", "Custo previsto", "Valor pago", "Falta pagar", "Lucro previsto"],
+        ["Valor cobrado", "Custo previsto", "Valor pago", "Falta pagar", "Lucro previsto"],
     )
 
 with tab_withdrawals:
