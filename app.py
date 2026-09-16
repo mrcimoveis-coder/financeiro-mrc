@@ -818,20 +818,77 @@ with tab_summary:
             "Resultado realizado": quick_history_view["Resultado realizado"].sum(),
         }])
         quick_history_view = pd.concat([quick_history_view, total_realized], ignore_index=True)
-        display_money_table(
-            quick_history_view,
-            ["Receitas realizadas", "Despesas realizadas", "Resultado realizado"],
+        quick_history_display = quick_history_view.copy()
+        for money_column in ["Receitas realizadas", "Despesas realizadas", "Resultado realizado"]:
+            quick_history_display[money_column] = quick_history_display[money_column].map(format_brl)
+        st.caption("Clique em um mês para ver os lançamentos que formam os valores realizados.")
+        month_selection = st.dataframe(
+            quick_history_display,
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            key=f"summary_realized_month_{selected_year}",
         )
+        selected_rows = month_selection.selection.rows
+        if selected_rows:
+            selected_label = str(quick_history_view.iloc[selected_rows[0]]["Mês"])
+            if selected_label != "TOTAL REALIZADO":
+                selected_month = next(
+                    month_number for month_number, month_name in MESES.items()
+                    if month_name == selected_label
+                )
+                realized_details = realization_tracking(combined_history)
+                realized_details = realized_details[
+                    realized_details["competencia"].notna()
+                    & (realized_details["competencia"].dt.year == selected_year)
+                    & (realized_details["competencia"].dt.month == selected_month)
+                    & (realized_details["realizado"] > 0)
+                ].copy()
+                st.subheader(f"Detalhamento realizado de {selected_label.title()}/{selected_year}")
+                if realized_details.empty:
+                    st.info("Não há lançamentos detalhados disponíveis para este mês.")
+                else:
+                    withdrawal_mask = realized_details["natureza"].map(is_profit_withdrawal_nature)
+                    detail_groups = [
+                        ("Receitas", realized_details[realized_details["tipo"] == "Receita"]),
+                        (
+                            "Despesas operacionais",
+                            realized_details[(realized_details["tipo"] == "Despesa") & ~withdrawal_mask],
+                        ),
+                        (
+                            "Retiradas de lucros",
+                            realized_details[(realized_details["tipo"] == "Despesa") & withdrawal_mask],
+                        ),
+                    ]
+                    for group_title, group_frame in detail_groups:
+                        if group_frame.empty:
+                            continue
+                        st.markdown(f"**{group_title} — {format_brl(float(group_frame['realizado'].sum()))}**")
+                        detail_view = group_frame[[
+                            "historico", "categoria", "previsto", "realizado", "status", "natureza"
+                        ]].rename(columns={
+                            "historico": "Lançamento",
+                            "categoria": "Categoria",
+                            "previsto": "Previsto",
+                            "realizado": "Realizado",
+                            "status": "Situação",
+                            "natureza": "Natureza",
+                        }).sort_values("Lançamento", key=lambda column: column.map(normalize_label))
+                        display_money_table(detail_view, ["Previsto", "Realizado"])
     st.caption("O detalhamento completo continua disponível na aba Histórico.")
 
     st.markdown('<div class="status-note">Ao quitar um lançamento, ele deixa de afetar a projeção. O valor realizado fica apenas no histórico, pois o débito ou crédito já estará refletido no saldo bancário atualizado.</div>', unsafe_allow_html=True)
     st.subheader(f"Valores que ainda faltam em {selected_year}")
-    remaining_view = projected[projected["aplicavel"]][["mes", "receitas", "despesas", "resultado"]].rename(
+    remaining_view = projected[projected["aplicavel"]][
+        ["mes", "receitas", "despesas", "retiradas", "movimento_caixa"]
+    ].rename(
         columns={
             "mes": "Mês",
             "receitas": "Receitas a receber",
             "despesas": "Despesas a pagar",
-            "resultado": "Resultado pendente",
+            "retiradas": "Retiradas de lucros",
+            "movimento_caixa": "Movimento no caixa",
         }
     )
     if remaining_view.empty:
@@ -841,12 +898,13 @@ with tab_summary:
             "Mês": "TOTAL PENDENTE",
             "Receitas a receber": remaining_view["Receitas a receber"].sum(),
             "Despesas a pagar": remaining_view["Despesas a pagar"].sum(),
-            "Resultado pendente": remaining_view["Resultado pendente"].sum(),
+            "Retiradas de lucros": remaining_view["Retiradas de lucros"].sum(),
+            "Movimento no caixa": remaining_view["Movimento no caixa"].sum(),
         }])
         remaining_view = pd.concat([remaining_view, total_remaining], ignore_index=True)
         display_money_table(
             remaining_view,
-            ["Receitas a receber", "Despesas a pagar", "Resultado pendente"],
+            ["Receitas a receber", "Despesas a pagar", "Retiradas de lucros", "Movimento no caixa"],
         )
 
 with tab_pending:
