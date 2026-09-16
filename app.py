@@ -1215,9 +1215,10 @@ with tab_forecast:
         matrix["_type_order"] = matrix["Tipo"].map(
             lambda value: 0 if normalize_label(value) == "receita" else 1
         )
+        matrix["_launch_order"] = matrix["Lançamento"].map(normalize_label)
         matrix = (
-            matrix.sort_values("_type_order", kind="stable")
-            .drop(columns="_type_order")
+            matrix.sort_values(["_type_order", "_launch_order"], kind="stable")
+            .drop(columns=["_type_order", "_launch_order"])
             .reset_index(drop=True)
         )
         matrix_editor_key = f"annual_matrix_editor_{selected_year}"
