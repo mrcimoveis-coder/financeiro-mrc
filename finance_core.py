@@ -56,6 +56,15 @@ def format_brl(value: float) -> str:
     return f"R$ {float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def settlement_amount(planned: float, actual: float, close_requested: bool) -> float:
+    """Use the planned amount when closing a launch without an informed actual."""
+    planned_value = max(float(planned), 0.0)
+    actual_value = max(float(actual), 0.0)
+    if close_requested and actual_value <= 0.005:
+        return planned_value
+    return actual_value
+
+
 def fx_balance_brl(amount: float, quotation: float, percentage: float = 100.0) -> float:
     """Convert a foreign-currency balance to BRL using the selected valuation percentage."""
     return max(0.0, float(amount)) * max(0.0, float(quotation)) * max(0.0, float(percentage)) / 100.0
@@ -620,4 +629,3 @@ def safe_day(value: int) -> int:
 
 def clean_key(value: str) -> str:
     return re.sub(r"[^a-z0-9_]+", "_", str(value).strip().lower()).strip("_")
-

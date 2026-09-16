@@ -21,6 +21,7 @@ from finance_core import (
     is_profit_withdrawal_nature,
     projection,
     realization_tracking,
+    settlement_amount,
     suggest_next_year_forecast,
     variance,
     withdrawal_summary,
@@ -41,6 +42,15 @@ def launch(description, launch_type, planned, actual, status):
 
 
 class PartialRealizationTests(unittest.TestCase):
+    def test_closing_without_actual_assumes_planned_amount(self):
+        self.assertEqual(settlement_amount(7_000, 0, True), 7_000)
+
+    def test_closing_with_changed_actual_preserves_informed_amount(self):
+        self.assertEqual(settlement_amount(7_000, 6_850, True), 6_850)
+
+    def test_partial_amount_is_not_changed_when_launch_remains_open(self):
+        self.assertEqual(settlement_amount(7_000, 2_000, False), 2_000)
+
     def test_withdrawal_summary_matches_2026_example(self):
         profit = [44_000, 52_000, 50_000, 40_000, 44_000, 32_000, 26_000, 30_000, 32_000]
         additional = [122_200, 37_000, 38_450, 1_250, 0, 26_800, 93_550, 27_800, 0]
@@ -276,4 +286,3 @@ class PartialRealizationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -46,6 +46,7 @@ from finance_core import (
     projection,
     realization_tracking,
     safe_day,
+    settlement_amount,
     suggest_next_year_forecast,
     variance,
     withdrawal_summary,
@@ -987,7 +988,12 @@ with tab_pending:
                     original = editor_source.iloc[index]
                     updates = {}
                     planned = float(edited_row["Previsto"])
-                    actual = float(edited_row["Pago / recebido acumulado"])
+                    close_requested = bool(edited_row["Encerrar"])
+                    actual = settlement_amount(
+                        planned,
+                        float(edited_row["Pago / recebido acumulado"]),
+                        close_requested,
+                    )
                     planned_changed = abs(planned - float(original["Previsto"])) > 0.005
                     actual_changed = abs(actual - float(original["Pago / recebido acumulado"])) > 0.005
                     if planned_changed:
@@ -1007,7 +1013,7 @@ with tab_pending:
                                     "Valor Previsto (R$)": format_brl(planned),
                                     "Atualizado Em": datetime.now().strftime("%d/%m/%Y %H:%M"),
                                 })
-                    close_launch = bool(edited_row["Encerrar"]) or (planned > 0 and actual >= planned)
+                    close_launch = close_requested or (planned > 0 and actual >= planned)
                     if close_launch:
                         updates.update({
                             "Status": "Recebido" if edited_row["Tipo"] == "Receita" else "Pago",
@@ -2472,4 +2478,3 @@ with tab_settings:
     d1.metric("Total distribuível", format_brl(distributable))
     d2.metric("Sócio 1", format_brl(max(distributable, 0) * parameters["percentual_socio_1"] / 100))
     d3.metric("Sócio 2", format_brl(max(distributable, 0) * parameters["percentual_socio_2"] / 100))
-
