@@ -134,9 +134,20 @@ st.markdown(
     div[data-testid="stMetric"] [data-testid="stMetricValue"],
     div[data-testid="stMetric"] [data-testid="stMetricLabel"] p,
     div[data-testid="stMetric"] [data-testid="stMetricValue"] div {color:#172033 !important; opacity:1 !important}
+    .annual-summary-grid {display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:14px; margin:.35rem 0 .65rem}
+    .annual-summary-card {background:#fff; border:1px solid #e5e7eb; border-top:4px solid #c4001a; padding:12px 14px; border-radius:10px; min-width:0}
+    .annual-summary-label {color:#172033; font-size:.78rem; line-height:1.25; min-height:2rem; margin-bottom:.25rem}
+    .annual-summary-value {color:#172033; font-size:clamp(1.05rem, 1.65vw, 1.55rem); line-height:1.2; white-space:nowrap; letter-spacing:-.02em}
+    @media (max-width: 1050px) {
+        .annual-summary-grid {grid-template-columns:repeat(2, minmax(0, 1fr))}
+        .annual-summary-value {font-size:1.35rem}
+    }
     @media (max-width: 768px) {
         div[data-testid="stMetric"] {min-height:104px; padding:12px}
         div[data-testid="stMetric"] [data-testid="stMetricValue"] {font-size:1.45rem !important}
+        .annual-summary-grid {grid-template-columns:1fr; gap:10px}
+        .annual-summary-label {min-height:0}
+        .annual-summary-value {font-size:1.3rem}
     }
     .status-note {padding:.7rem 1rem; border-radius:8px; background:#f7f3fb; border-left:4px solid #8064a2}
     </style>
@@ -1626,14 +1637,23 @@ with tab_forecast:
         annual_result = annual_income - annual_expense
         annual_after_withdrawals = annual_result - annual_withdrawals
         st.subheader(f"Fechamento anual de {selected_year}")
-        total_income, total_expense, total_withdrawals, total_result, total_after_withdrawals = st.columns(5)
-        total_income.metric("Receitas previstas no ano", format_brl(annual_income))
-        total_expense.metric("Despesas previstas no ano", format_brl(annual_expense))
-        total_withdrawals.metric("Retiradas previstas no ano", format_brl(annual_withdrawals))
-        total_result.metric("Resultado previsto no ano", format_brl(annual_result))
-        total_after_withdrawals.metric(
-            "Resultado após retiradas",
-            format_brl(annual_after_withdrawals),
+        annual_cards = [
+            ("Receitas previstas no ano", annual_income),
+            ("Despesas previstas no ano", annual_expense),
+            ("Retiradas previstas no ano", annual_withdrawals),
+            ("Resultado previsto no ano", annual_result),
+            ("Resultado após retiradas", annual_after_withdrawals),
+        ]
+        cards_html = "".join(
+            '<div class="annual-summary-card">'
+            f'<div class="annual-summary-label">{label}</div>'
+            f'<div class="annual-summary-value">{format_brl(value)}</div>'
+            "</div>"
+            for label, value in annual_cards
+        )
+        st.markdown(
+            f'<div class="annual-summary-grid">{cards_html}</div>',
+            unsafe_allow_html=True,
         )
         if annual_after_withdrawals >= 0:
             st.caption(
