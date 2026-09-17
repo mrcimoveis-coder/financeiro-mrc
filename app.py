@@ -129,21 +129,14 @@ st.markdown(
     <style>
     #MainMenu, footer {visibility:hidden}
     .block-container {padding-top:1.2rem; max-width:1450px}
-    div[data-testid="stMetric"] {background:#fff; border:1px solid #e5e7eb; border-top:4px solid #c4001a; padding:14px; border-radius:10px; container-type:inline-size}
+    div[data-testid="stMetric"] {background:#fff; border:1px solid #e5e7eb; border-top:4px solid #c4001a; padding:14px; border-radius:10px}
     div[data-testid="stMetric"] [data-testid="stMetricLabel"],
     div[data-testid="stMetric"] [data-testid="stMetricValue"],
     div[data-testid="stMetric"] [data-testid="stMetricLabel"] p,
     div[data-testid="stMetric"] [data-testid="stMetricValue"] div {color:#172033 !important; opacity:1 !important}
-    div[data-testid="stMetric"] [data-testid="stMetricValue"] {
-        font-size:clamp(1.05rem, 10cqi, 2rem) !important;
-        line-height:1.2 !important;
-        white-space:nowrap !important;
-        overflow:visible !important;
-        text-overflow:clip !important;
-    }
     @media (max-width: 768px) {
         div[data-testid="stMetric"] {min-height:104px; padding:12px}
-        div[data-testid="stMetric"] [data-testid="stMetricValue"] {font-size:clamp(1.05rem, 10cqi, 1.45rem) !important}
+        div[data-testid="stMetric"] [data-testid="stMetricValue"] {font-size:1.45rem !important}
     }
     .status-note {padding:.7rem 1rem; border-radius:8px; background:#f7f3fb; border-left:4px solid #8064a2}
     </style>
@@ -1068,15 +1061,6 @@ with tab_launch:
         nature = g.selectbox("Natureza", NATURE_OPTIONS)
         involved = h.text_input("Envolvido")
         account = i.text_input("Conta")
-        launch_state = st.radio(
-            "Situação do lançamento",
-            ["Enviar para pendências", "Já pago / recebido"],
-            horizontal=True,
-            help=(
-                "Use 'Já pago / recebido' quando o valor já estiver refletido no saldo bancário. "
-                "O lançamento ficará no histórico e não entrará nas pendências."
-            ),
-        )
         notes = st.text_area("Observações")
         submit_launch = st.form_submit_button("Salvar lançamento", type="primary")
     if submit_launch:
@@ -1089,18 +1073,12 @@ with tab_launch:
             used_quote = manual_quote or quote or 0.0
             planned_brl = amount if currency == "BRL" else amount * used_quote * percent / 100.0
             now = datetime.now().strftime("%d/%m/%Y %H:%M")
-            already_realized = launch_state == "Já pago / recebido"
-            launch_status = (
-                "Recebido" if launch_type == "Receita" else "Pago"
-            ) if already_realized else "Pendente"
             row = {
                 "Mês": MESES[due.month], "Tipo de Operação": launch_type, "Categoria": category,
                 "Corretor / Envolvido": involved, "Histórico": description, "Valor (R$)": format_brl(planned_brl),
-                "Status": launch_status, "Observação": notes, "ID": new_id(), "Competência": due.strftime("%m/%Y"),
+                "Status": "Pendente", "Observação": notes, "ID": new_id(), "Competência": due.strftime("%m/%Y"),
                 "Vencimento": due.strftime("%d/%m/%Y"), "Valor Previsto (R$)": format_brl(planned_brl),
-                "Valor Realizado (R$)": format_brl(planned_brl) if already_realized else "",
-                "Data Quitação": today.strftime("%d/%m/%Y") if already_realized else "",
-                "Conta": account, "Natureza": nature,
+                "Valor Realizado (R$)": "", "Data Quitação": "", "Conta": account, "Natureza": nature,
                 "Série ID": "", "Criado Em": now, "Atualizado Em": now, "Moeda": currency,
                 "Valor na Moeda": amount if currency == "USD" else "", "Cotação Utilizada": used_quote if currency == "USD" else "",
                 "Percentual Considerado": percent if currency == "USD" else 100,
@@ -1108,10 +1086,7 @@ with tab_launch:
             append_dicts(ws_forecast, MAIN_HEADERS, [row])
             if currency == "USD" and quote:
                 append_dicts(ws_quotes, QUOTE_HEADERS, [{"Data": quote_date.strftime("%d/%m/%Y"), "Moeda": "USD", "Compra": "", "Venda": quote, "Fonte": "BCB PTAX", "Consultado Em": now}])
-            if already_realized:
-                st.success("Lançamento salvo como já realizado. Ele está no histórico e não foi enviado para as pendências.")
-            else:
-                st.success("Lançamento salvo e enviado para as pendências.")
+            st.success("Lançamento salvo.")
 
 with tab_forecast:
     review_source_year = selected_year
@@ -1622,30 +1597,54 @@ with tab_forecast:
             "Os valores abaixo vêm dos mesmos lançamentos da matriz e são atualizados "
             "sempre que uma receita ou despesa é alterada."
         )
-        monthly_summary = monthly[["mes", "receitas", "despesas", "retiradas", "resultado"]].rename(
+        monthly_summary = monthly[
+            ["mes", "receitas", "despesas", "retiradas", "resultado", "movimento_caixa"]
+        ].rename(
             columns={
                 "mes": "Mês",
                 "receitas": "Receitas previstas",
                 "despesas": "Despesas previstas",
                 "retiradas": "Retiradas de lucros",
                 "resultado": "Resultado previsto",
+                "movimento_caixa": "Resultado após retiradas",
             }
         )
         display_money_table(
             monthly_summary,
-            ["Receitas previstas", "Despesas previstas", "Retiradas de lucros", "Resultado previsto"],
+            [
+                "Receitas previstas",
+                "Despesas previstas",
+                "Retiradas de lucros",
+                "Resultado previsto",
+                "Resultado após retiradas",
+            ],
         )
 
         annual_income = float(monthly["receitas"].sum())
         annual_expense = float(monthly["despesas"].sum())
         annual_withdrawals = float(monthly["retiradas"].sum())
         annual_result = annual_income - annual_expense
+        annual_after_withdrawals = annual_result - annual_withdrawals
         st.subheader(f"Fechamento anual de {selected_year}")
-        total_income, total_expense, total_withdrawals, total_result = st.columns(4)
+        total_income, total_expense, total_withdrawals, total_result, total_after_withdrawals = st.columns(5)
         total_income.metric("Receitas previstas no ano", format_brl(annual_income))
         total_expense.metric("Despesas previstas no ano", format_brl(annual_expense))
         total_withdrawals.metric("Retiradas previstas no ano", format_brl(annual_withdrawals))
         total_result.metric("Resultado previsto no ano", format_brl(annual_result))
+        total_after_withdrawals.metric(
+            "Resultado após retiradas",
+            format_brl(annual_after_withdrawals),
+        )
+        if annual_after_withdrawals >= 0:
+            st.caption(
+                "Sobra informativa após as retiradas de lucros programadas: "
+                f"{format_brl(annual_after_withdrawals)}."
+            )
+        else:
+            st.caption(
+                "Falta informativa após as retiradas de lucros programadas: "
+                f"{format_brl(abs(annual_after_withdrawals))}."
+            )
 
     st.subheader("Alterar valores a partir de um mês")
     editable_series = year_series[year_series["serie_id"].astype(str).str.strip() != ""] if not year_series.empty else year_series

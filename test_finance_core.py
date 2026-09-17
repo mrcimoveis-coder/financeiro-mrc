@@ -270,6 +270,7 @@ class PartialRealizationTests(unittest.TestCase):
         self.assertEqual(september["despesas"], 40_000)
         self.assertEqual(september["retiradas"], 32_000)
         self.assertEqual(september["resultado"], 60_000)
+        self.assertEqual(september["movimento_caixa"], 28_000)
         self.assertEqual(projected.iloc[8]["saldo_projetado"], 28_000)
 
     def test_realized_profit_withdrawal_is_not_an_operating_expense(self):
