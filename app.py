@@ -129,11 +129,25 @@ st.markdown(
     <style>
     #MainMenu, footer {visibility:hidden}
     .block-container {padding-top:1.2rem; max-width:1450px}
-    div[data-testid="stMetric"] {background:#fff; border:1px solid #e5e7eb; border-top:4px solid #c4001a; padding:14px; border-radius:10px}
+    div[data-testid="stMetric"] {background:#fff; border:1px solid #e5e7eb; border-top:4px solid #c4001a; padding:14px; border-radius:10px; container-type:inline-size; min-width:0}
     div[data-testid="stMetric"] [data-testid="stMetricLabel"],
     div[data-testid="stMetric"] [data-testid="stMetricValue"],
     div[data-testid="stMetric"] [data-testid="stMetricLabel"] p,
     div[data-testid="stMetric"] [data-testid="stMetricValue"] div {color:#172033 !important; opacity:1 !important}
+    div[data-testid="stMetric"] [data-testid="stMetricValue"],
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] > div,
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] div,
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] p,
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] span {
+        width:100% !important;
+        max-width:none !important;
+        min-width:0 !important;
+        font-size:clamp(.95rem, 9cqi, 2rem) !important;
+        line-height:1.2 !important;
+        white-space:nowrap !important;
+        overflow:visible !important;
+        text-overflow:clip !important;
+    }
     .annual-summary-grid {display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:14px; margin:.35rem 0 .65rem}
     .annual-summary-card {background:#fff; border:1px solid #e5e7eb; border-top:4px solid #c4001a; padding:12px 14px; border-radius:10px; min-width:0}
     .annual-summary-label {color:#172033; font-size:.78rem; line-height:1.25; min-height:2rem; margin-bottom:.25rem}
@@ -144,7 +158,13 @@ st.markdown(
     }
     @media (max-width: 768px) {
         div[data-testid="stMetric"] {min-height:104px; padding:12px}
-        div[data-testid="stMetric"] [data-testid="stMetricValue"] {font-size:1.45rem !important}
+        div[data-testid="stMetric"] [data-testid="stMetricValue"],
+        div[data-testid="stMetric"] [data-testid="stMetricValue"] > div,
+        div[data-testid="stMetric"] [data-testid="stMetricValue"] div,
+        div[data-testid="stMetric"] [data-testid="stMetricValue"] p,
+        div[data-testid="stMetric"] [data-testid="stMetricValue"] span {
+            font-size:clamp(.95rem, 8cqi, 1.45rem) !important;
+        }
         .annual-summary-grid {grid-template-columns:1fr; gap:10px}
         .annual-summary-label {min-height:0}
         .annual-summary-value {font-size:1.3rem}
