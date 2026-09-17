@@ -129,14 +129,21 @@ st.markdown(
     <style>
     #MainMenu, footer {visibility:hidden}
     .block-container {padding-top:1.2rem; max-width:1450px}
-    div[data-testid="stMetric"] {background:#fff; border:1px solid #e5e7eb; border-top:4px solid #c4001a; padding:14px; border-radius:10px}
+    div[data-testid="stMetric"] {background:#fff; border:1px solid #e5e7eb; border-top:4px solid #c4001a; padding:14px; border-radius:10px; container-type:inline-size}
     div[data-testid="stMetric"] [data-testid="stMetricLabel"],
     div[data-testid="stMetric"] [data-testid="stMetricValue"],
     div[data-testid="stMetric"] [data-testid="stMetricLabel"] p,
     div[data-testid="stMetric"] [data-testid="stMetricValue"] div {color:#172033 !important; opacity:1 !important}
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+        font-size:clamp(1.05rem, 10cqi, 2rem) !important;
+        line-height:1.2 !important;
+        white-space:nowrap !important;
+        overflow:visible !important;
+        text-overflow:clip !important;
+    }
     @media (max-width: 768px) {
         div[data-testid="stMetric"] {min-height:104px; padding:12px}
-        div[data-testid="stMetric"] [data-testid="stMetricValue"] {font-size:1.45rem !important}
+        div[data-testid="stMetric"] [data-testid="stMetricValue"] {font-size:clamp(1.05rem, 10cqi, 1.45rem) !important}
     }
     .status-note {padding:.7rem 1rem; border-radius:8px; background:#f7f3fb; border-left:4px solid #8064a2}
     </style>
