@@ -98,6 +98,10 @@ CORRECTION_LOG_HEADERS = [
 DELETED_LAUNCH_HEADERS = [
     "Excluído Em", "Usuário", "Origem", "Linha Original", "Motivo", *MAIN_HEADERS,
 ]
+LOAN_HEADERS = ["ID", "Data", "Histórico", "Valor (R$)", "Criado Em", "Atualizado Em"]
+PARTNER_SETTLEMENT_HEADERS = [
+    "ID", "Competência", "Data", "Sócio", "Tipo", "Histórico", "Valor (R$)", "Criado Em", "Atualizado Em",
+]
 
 STABILIZED_RENT_GOAL_TYPE = "Renda mensal estabilizada (manual)"
 MANUAL_GOAL_TYPES = {"Manual", STABILIZED_RENT_GOAL_TYPE}
@@ -606,6 +610,190 @@ def display_money_table(frame: pd.DataFrame, columns: list[str]) -> None:
     st.dataframe(view, use_container_width=True, hide_index=True)
 
 
+def loan_ledger(records: list[dict]) -> pd.DataFrame:
+    """Return a chronological loan ledger with its running balance calculated from movements."""
+    rows = []
+    for sheet_row, record in enumerate(records, start=2):
+        movement_date = clean_editor_date(record.get("Data"))
+        rows.append({
+            "sheet_row": sheet_row,
+            "ID": str(record.get("ID") or ""),
+            "Data": movement_date,
+            "Histórico": clean_editor_text(record.get("Histórico")),
+            "Valor": parse_money(record.get("Valor (R$)")),
+        })
+    frame = pd.DataFrame(rows, columns=["sheet_row", "ID", "Data", "Histórico", "Valor"])
+    if frame.empty:
+        frame["Saldo"] = pd.Series(dtype=float)
+        return frame
+    frame["_ordem"] = range(len(frame))
+    frame = frame.sort_values(["Data", "_ordem"], na_position="last").drop(columns="_ordem")
+    frame["Saldo"] = frame["Valor"].cumsum().round(2)
+    return frame.reset_index(drop=True)
+
+
+def partner_settlement_ledger(records: list[dict], competence: str | None = None) -> pd.DataFrame:
+    """Keep personal partner adjustments separate from the corporate financial forecast."""
+    rows = []
+    for sheet_row, record in enumerate(records, start=2):
+        row_competence = clean_editor_text(record.get("Competência"))
+        if competence and row_competence != competence:
+            continue
+        movement_date = clean_editor_date(record.get("Data"))
+        rows.append({
+            "sheet_row": sheet_row,
+            "ID": str(record.get("ID") or ""),
+            "Competência": row_competence,
+            "Data": movement_date,
+            "Sócio": clean_editor_text(record.get("Sócio")),
+            "Tipo": clean_editor_text(record.get("Tipo")),
+            "Histórico": clean_editor_text(record.get("Histórico")),
+            "Valor": parse_money(record.get("Valor (R$)")),
+        })
+    frame = pd.DataFrame(rows, columns=["sheet_row", "ID", "Competência", "Data", "Sócio", "Tipo", "Histórico", "Valor"])
+    if frame.empty:
+        frame["Saldo"] = pd.Series(dtype=float)
+        return frame
+    frame["_ordem"] = range(len(frame))
+    frame = frame.sort_values(["Sócio", "Data", "_ordem"], na_position="last")
+    frame["Saldo"] = frame.groupby("Sócio")["Valor"].cumsum().round(2)
+    return frame.drop(columns="_ordem").reset_index(drop=True)
+
+
+def ensure_initial_adjustment_rows(ws_marcos, ws_torre, ws_partners) -> None:
+    """Create the three independent ledgers once, seeded with the balances supplied by MRC."""
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+    if not load_records(ws_marcos):
+        marcos_rows = [
+            ("01/04/2026", "Empréstimo para Marcos Veloso", 20_000.00),
+            ("12/05/2026", "Juros de 1%", 200.00),
+            ("12/05/2026", "Pagamento parcial", -752.93),
+            ("12/06/2026", "Juros de 1%", 194.47),
+            ("12/06/2026", "Pagamento parcial", -871.77),
+            ("12/07/2026", "Juros de 1%", 187.70),
+            ("12/07/2026", "Pagamento parcial", -928.65),
+            ("12/08/2026", "Juros de 1%", 180.29),
+            ("12/08/2026", "Devolução parcial", -1_269.63),
+            ("10/08/2026", "Devolução parcial - Oceania", -2_687.50),
+            ("12/09/2026", "Juros de 1%", 142.52),
+            ("12/09/2026", "Devolução parcial", -142.52),
+        ]
+        append_dicts(ws_marcos, LOAN_HEADERS, [{
+            "ID": new_id("EMP_MV"), "Data": item_date, "Histórico": description,
+            "Valor (R$)": format_brl(amount), "Criado Em": now, "Atualizado Em": now,
+        } for item_date, description, amount in marcos_rows])
+    if not load_records(ws_torre):
+        torre_rows = [
+            ("10/04/2026", "Empréstimo para Torre Forte", 270_000.00),
+            ("17/06/2026", "Devolução parcial", -10_000.00),
+            ("22/06/2026", "Devolução parcial", -10_000.00),
+            ("29/06/2026", "Devolução parcial", -13_000.00),
+            ("03/07/2026", "Devolução parcial", -30_000.00),
+            ("29/07/2026", "Devolução parcial", -5_500.00),
+            ("10/08/2026", "Devolução parcial", -20_000.00),
+        ]
+        append_dicts(ws_torre, LOAN_HEADERS, [{
+            "ID": new_id("EMP_TF"), "Data": item_date, "Histórico": description,
+            "Valor (R$)": format_brl(amount), "Criado Em": now, "Atualizado Em": now,
+        } for item_date, description, amount in torre_rows])
+    if not load_records(ws_partners):
+        partner_rows = [
+            ("09/2026", "01/09/2026", "Marcelo", "Despesa", "Diarista MRC", 550.00),
+            ("09/2026", "01/09/2026", "Marcelo", "Despesa", "CEB - MRC", 200.00),
+            ("09/2026", "01/09/2026", "Marcelo", "Despesa", "Meta Verified (WhatsApp)", 54.90),
+            ("09/2026", "01/09/2026", "Marcelo", "Despesa", "Café MRC", 48.00),
+            ("09/2026", "01/09/2026", "Marcelo", "Despesa", "Reparo Janela CLSW 302", 220.00),
+            ("09/2026", "01/09/2026", "Marcelo", "Crédito", "Recebimento Obra SQS 112", -850.00),
+            ("09/2026", "01/09/2026", "Marcio", "Despesa", "Drone - Parcela 05/10", 219.90),
+            ("09/2026", "01/09/2026", "Marcio", "Crédito", "Renda Seguro (particular)", -350.00),
+        ]
+        append_dicts(ws_partners, PARTNER_SETTLEMENT_HEADERS, [{
+            "ID": new_id("ACERTO"), "Competência": competence, "Data": item_date,
+            "Sócio": partner, "Tipo": kind, "Histórico": description,
+            "Valor (R$)": format_brl(amount), "Criado Em": now, "Atualizado Em": now,
+        } for competence, item_date, partner, kind, description, amount in partner_rows])
+
+
+def render_loan_adjustment(title: str, ws, key: str, allow_interest: bool = False) -> None:
+    ledger = loan_ledger(load_records(ws))
+    balance = float(ledger["Saldo"].iloc[-1]) if not ledger.empty else 0.0
+    st.subheader(title)
+    st.metric("Saldo atualizado", format_brl(balance))
+    st.caption("Valores positivos aumentam o saldo; valores negativos registram pagamentos ou devoluções. O saldo é calculado automaticamente e não altera o financeiro principal.")
+
+    if ledger.empty:
+        st.info("Ainda não há movimentos neste controle.")
+    else:
+        editor = st.data_editor(
+            ledger[["sheet_row", "ID", "Data", "Histórico", "Valor", "Saldo"]],
+            use_container_width=True,
+            hide_index=True,
+            disabled=["sheet_row", "ID", "Saldo"],
+            column_config={
+                "sheet_row": None,
+                "ID": None,
+                "Data": st.column_config.DateColumn(format="DD/MM/YYYY", required=True),
+                "Valor": st.column_config.NumberColumn("Valor", format="R$ %.2f", required=True),
+                "Saldo": st.column_config.NumberColumn("Saldo calculado", format="R$ %.2f"),
+            },
+            key=f"{key}_editor",
+        )
+        if st.button("Salvar alterações da tabela", key=f"{key}_save", type="primary"):
+            now = datetime.now().strftime("%d/%m/%Y %H:%M")
+            for _, item in editor.iterrows():
+                movement_date = clean_editor_date(item["Data"])
+                update_row(ws, int(item["sheet_row"]), {
+                    "Data": movement_date.strftime("%d/%m/%Y") if movement_date else "",
+                    "Histórico": clean_editor_text(item["Histórico"]),
+                    "Valor (R$)": format_brl(float(item["Valor"])),
+                    "Atualizado Em": now,
+                })
+            st.success("Tabela atualizada.")
+            st.rerun()
+
+    with st.expander("Adicionar movimento", expanded=ledger.empty):
+        with st.form(f"{key}_new_movement", clear_on_submit=True):
+            c1, c2 = st.columns([1, 2])
+            movement_date = c1.date_input("Data", value=today, format="DD/MM/YYYY", key=f"{key}_date")
+            description = c2.text_input("Histórico", key=f"{key}_history")
+            c3, c4 = st.columns(2)
+            kind = c3.selectbox("Movimento", ["Novo empréstimo / acréscimo", "Pagamento / devolução"], key=f"{key}_kind")
+            amount = c4.number_input("Valor", min_value=0.0, step=100.0, key=f"{key}_amount")
+            save_movement = st.form_submit_button("Registrar movimento", type="primary")
+        if save_movement:
+            if not description.strip() or amount <= 0:
+                st.error("Informe o histórico e um valor maior que zero.")
+            else:
+                signed_amount = amount if kind == "Novo empréstimo / acréscimo" else -amount
+                now = datetime.now().strftime("%d/%m/%Y %H:%M")
+                append_dicts(ws, LOAN_HEADERS, [{
+                    "ID": new_id("MOV"), "Data": movement_date.strftime("%d/%m/%Y"),
+                    "Histórico": description.strip(), "Valor (R$)": format_brl(signed_amount),
+                    "Criado Em": now, "Atualizado Em": now,
+                }])
+                st.success("Movimento registrado.")
+                st.rerun()
+
+    if allow_interest:
+        with st.expander("Lançar juros de 1% do mês"):
+            st.caption(f"O cálculo será de 1% sobre o saldo atual: {format_brl(max(balance, 0) * 0.01)}.")
+            with st.form(f"{key}_interest"):
+                interest_date = st.date_input("Data dos juros", value=today, format="DD/MM/YYYY", key=f"{key}_interest_date")
+                add_interest = st.form_submit_button("Adicionar juros de 1%")
+            if add_interest:
+                if balance <= 0:
+                    st.warning("Não há saldo positivo para aplicar juros.")
+                else:
+                    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+                    append_dicts(ws, LOAN_HEADERS, [{
+                        "ID": new_id("JUROS"), "Data": interest_date.strftime("%d/%m/%Y"),
+                        "Histórico": "Juros de 1%", "Valor (R$)": format_brl(round(balance * 0.01, 2)),
+                        "Criado Em": now, "Atualizado Em": now,
+                    }])
+                    st.success("Juros lançados.")
+                    st.rerun()
+
+
 def achieved_goal_value(goal: dict, launches_df: pd.DataFrame, year: int, reference: date) -> float:
     calculation_type = str(goal.get("Tipo de Apuração") or "Manual")
     if calculation_type in MANUAL_GOAL_TYPES:
@@ -646,6 +834,9 @@ try:
     ws_forecast_review = worksheet("Revisao_Forecast", FORECAST_REVIEW_HEADERS, 2000)
     ws_goals = worksheet("Metas_Anuais", GOAL_HEADERS, 500)
     ws_withdrawals = worksheet("Retiradas_Socios", WITHDRAWAL_HEADERS, 1000)
+    ws_loan_marcos = worksheet("Emprestimo_MRC_Marcos", LOAN_HEADERS, 500)
+    ws_loan_torre = worksheet("Emprestimo_MRC_Torre_Forte", LOAN_HEADERS, 500)
+    ws_partner_settlements = worksheet("Acertos_Socios", PARTNER_SETTLEMENT_HEADERS, 1000)
     ws_correction_log = worksheet("Log_Correcoes", CORRECTION_LOG_HEADERS, 1000)
     ws_deleted_launches = worksheet("Lancamentos_Excluidos", DELETED_LAUNCH_HEADERS, 1000)
 except Exception as exc:
@@ -667,6 +858,7 @@ history_launches["origem"] = "Histórico"
 ensure_balance_rows(ws_balances)
 ensure_initial_work_rows(ws_works)
 ensure_withdrawal_year(ws_withdrawals, 2026)
+ensure_initial_adjustment_rows(ws_loan_marcos, ws_loan_torre, ws_partner_settlements)
 works = normalize_works(load_records(ws_works))
 withdrawals = normalize_withdrawals(load_records(ws_withdrawals))
 works_payable = construction_payables(works)
@@ -720,8 +912,8 @@ with st.sidebar:
 st.title("💰 Previsão financeira — MRC Imóveis")
 st.caption("O saldo bancário representa o que já aconteceu. Somente receitas e despesas ainda abertas alteram a projeção futura.")
 
-tab_summary, tab_pending, tab_launch, tab_forecast, tab_works, tab_withdrawals, tab_balances, tab_history, tab_settings = st.tabs(
-    ["Resumo", "Pendências", "Novo lançamento", "Forecast", "Obras", "Retiradas", "Saldos", "Histórico", "Configurações"]
+tab_summary, tab_pending, tab_launch, tab_forecast, tab_works, tab_withdrawals, tab_balances, tab_history, tab_adjustments, tab_settings = st.tabs(
+    ["Resumo", "Pendências", "Novo lançamento", "Forecast", "Obras", "Retiradas", "Saldos", "Histórico", "Acertos", "Configurações"]
 )
 
 monthly = monthly_forecast(launches, selected_year)
@@ -2369,6 +2561,112 @@ with tab_history:
             summary = history.groupby("historico", dropna=False).agg(previsto=("previsto", "sum"), realizado=("realizado", "sum"), variacao=("variacao", "sum")).reset_index()
             st.subheader("Diferenças acumuladas por lançamento")
             display_money_table(summary.sort_values("variacao", key=lambda s: s.abs(), ascending=False), ["previsto", "realizado", "variacao"])
+
+with tab_adjustments:
+    st.header("Acertos")
+    st.caption("Controles independentes do forecast, saldos bancários, obras e retiradas. Cada movimento fica salvo no Google Sheets para preservar o histórico.")
+
+    render_loan_adjustment("Empréstimo MRC x Marcos Veloso", ws_loan_marcos, "loan_marcos", allow_interest=True)
+    st.divider()
+    render_loan_adjustment("Empréstimo MRC x Torre Forte", ws_loan_torre, "loan_torre")
+    st.divider()
+
+    st.subheader("Acertos particulares — Marcio e Marcelo")
+    st.caption("Despesas pagas pessoalmente entram positivas (valor a reembolsar). Créditos, receitas e o acerto no salário entram negativos. Cada competência é encerrada manualmente, sem apagar o histórico.")
+    partner_records = load_records(ws_partner_settlements)
+    competences = sorted({clean_editor_text(item.get("Competência")) for item in partner_records if clean_editor_text(item.get("Competência"))}, reverse=True)
+    current_competence = today.strftime("%m/%Y")
+    if current_competence not in competences:
+        competences.insert(0, current_competence)
+    selected_settlement_competence = st.selectbox("Competência dos acertos", competences, key="partner_settlement_competence")
+    partner_ledger = partner_settlement_ledger(partner_records, selected_settlement_competence)
+
+    totals = {
+        partner: float(partner_ledger.loc[partner_ledger["Sócio"] == partner, "Valor"].sum())
+        for partner in ("Marcelo", "Marcio")
+    }
+    c1, c2 = st.columns(2)
+    c1.metric("Saldo Marcelo", format_brl(totals["Marcelo"]), help="Positivo: complementar no salário. Negativo: abater no salário.")
+    c2.metric("Saldo Marcio", format_brl(totals["Marcio"]), help="Positivo: complementar no salário. Negativo: abater no salário.")
+
+    if partner_ledger.empty:
+        st.info("Não há movimentos nesta competência.")
+    else:
+        partner_editor = st.data_editor(
+            partner_ledger[["sheet_row", "ID", "Competência", "Data", "Sócio", "Tipo", "Histórico", "Valor", "Saldo"]],
+            use_container_width=True,
+            hide_index=True,
+            disabled=["sheet_row", "ID", "Competência", "Saldo"],
+            column_config={
+                "sheet_row": None,
+                "ID": None,
+                "Data": st.column_config.DateColumn(format="DD/MM/YYYY", required=True),
+                "Sócio": st.column_config.SelectboxColumn(options=["Marcelo", "Marcio"], required=True),
+                "Tipo": st.column_config.SelectboxColumn(options=["Despesa", "Crédito", "Acerto salarial"], required=True),
+                "Valor": st.column_config.NumberColumn("Valor", format="R$ %.2f", required=True),
+                "Saldo": st.column_config.NumberColumn("Saldo do sócio", format="R$ %.2f"),
+            },
+            key=f"partner_editor_{selected_settlement_competence}",
+        )
+        if st.button("Salvar alterações dos acertos", key="partner_settlement_save", type="primary"):
+            now = datetime.now().strftime("%d/%m/%Y %H:%M")
+            for _, item in partner_editor.iterrows():
+                movement_date = clean_editor_date(item["Data"])
+                update_row(ws_partner_settlements, int(item["sheet_row"]), {
+                    "Data": movement_date.strftime("%d/%m/%Y") if movement_date else "",
+                    "Sócio": clean_editor_text(item["Sócio"]),
+                    "Tipo": clean_editor_text(item["Tipo"]),
+                    "Histórico": clean_editor_text(item["Histórico"]),
+                    "Valor (R$)": format_brl(float(item["Valor"])),
+                    "Atualizado Em": now,
+                })
+            st.success("Acertos atualizados.")
+            st.rerun()
+
+    with st.expander("Adicionar gasto, receita ou crédito"):
+        with st.form("partner_settlement_new", clear_on_submit=True):
+            a, b, c = st.columns(3)
+            movement_date = a.date_input("Data", value=today, format="DD/MM/YYYY")
+            partner = b.selectbox("Sócio", ["Marcelo", "Marcio"])
+            kind = c.selectbox("Tipo", ["Despesa", "Crédito"])
+            description = st.text_input("Histórico")
+            amount = st.number_input("Valor", min_value=0.0, step=10.0)
+            add_partner_movement = st.form_submit_button("Registrar acerto", type="primary")
+        if add_partner_movement:
+            if not description.strip() or amount <= 0:
+                st.error("Informe o histórico e um valor maior que zero.")
+            else:
+                now = datetime.now().strftime("%d/%m/%Y %H:%M")
+                signed_amount = amount if kind == "Despesa" else -amount
+                append_dicts(ws_partner_settlements, PARTNER_SETTLEMENT_HEADERS, [{
+                    "ID": new_id("ACERTO"), "Competência": selected_settlement_competence,
+                    "Data": movement_date.strftime("%d/%m/%Y"), "Sócio": partner, "Tipo": kind,
+                    "Histórico": description.strip(), "Valor (R$)": format_brl(signed_amount),
+                    "Criado Em": now, "Atualizado Em": now,
+                }])
+                st.success("Movimento de acerto registrado.")
+                st.rerun()
+
+    with st.expander("Zerar competência com o acerto salarial"):
+        st.warning("Esta ação não exclui nada: ela cria um lançamento de acerto salarial que compensa o saldo atual de cada sócio nesta competência.")
+        if st.button("Registrar acerto salarial e zerar saldos", key="partner_settlement_close"):
+            rows = []
+            now = datetime.now().strftime("%d/%m/%Y %H:%M")
+            for partner, total in totals.items():
+                if abs(total) > 0.005:
+                    rows.append({
+                        "ID": new_id("ACERTO_SALARIO"), "Competência": selected_settlement_competence,
+                        "Data": today.strftime("%d/%m/%Y"), "Sócio": partner, "Tipo": "Acerto salarial",
+                        "Histórico": "Acerto salarial da competência", "Valor (R$)": format_brl(-total),
+                        "Criado Em": now, "Atualizado Em": now,
+                    })
+            if not rows:
+                st.info("Os saldos desta competência já estão zerados.")
+            else:
+                append_dicts(ws_partner_settlements, PARTNER_SETTLEMENT_HEADERS, rows)
+                st.success("Acerto salarial registrado; os saldos foram zerados sem apagar o histórico.")
+                st.rerun()
+
 
 with tab_settings:
     st.subheader("Reservas e distribuição")
