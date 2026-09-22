@@ -1284,6 +1284,15 @@ with tab_launch:
         nature = g.selectbox("Natureza", NATURE_OPTIONS)
         involved = h.text_input("Envolvido")
         account = i.text_input("Conta")
+        launch_state = st.radio(
+            "Situação do lançamento",
+            ["Enviar para pendências", "Já pago / recebido"],
+            horizontal=True,
+            help=(
+                "Use 'Já pago / recebido' quando o valor já estiver refletido no saldo bancário. "
+                "O lançamento ficará no histórico e não entrará nas pendências."
+            ),
+        )
         notes = st.text_area("Observações")
         submit_launch = st.form_submit_button("Salvar lançamento", type="primary")
     if submit_launch:
@@ -1296,12 +1305,18 @@ with tab_launch:
             used_quote = manual_quote or quote or 0.0
             planned_brl = amount if currency == "BRL" else amount * used_quote * percent / 100.0
             now = datetime.now().strftime("%d/%m/%Y %H:%M")
+            already_realized = launch_state == "Já pago / recebido"
+            launch_status = (
+                "Recebido" if launch_type == "Receita" else "Pago"
+            ) if already_realized else "Pendente"
             row = {
                 "Mês": MESES[due.month], "Tipo de Operação": launch_type, "Categoria": category,
                 "Corretor / Envolvido": involved, "Histórico": description, "Valor (R$)": format_brl(planned_brl),
-                "Status": "Pendente", "Observação": notes, "ID": new_id(), "Competência": due.strftime("%m/%Y"),
+                "Status": launch_status, "Observação": notes, "ID": new_id(), "Competência": due.strftime("%m/%Y"),
                 "Vencimento": due.strftime("%d/%m/%Y"), "Valor Previsto (R$)": format_brl(planned_brl),
-                "Valor Realizado (R$)": "", "Data Quitação": "", "Conta": account, "Natureza": nature,
+                "Valor Realizado (R$)": format_brl(planned_brl) if already_realized else "",
+                "Data Quitação": today.strftime("%d/%m/%Y") if already_realized else "",
+                "Conta": account, "Natureza": nature,
                 "Série ID": "", "Criado Em": now, "Atualizado Em": now, "Moeda": currency,
                 "Valor na Moeda": amount if currency == "USD" else "", "Cotação Utilizada": used_quote if currency == "USD" else "",
                 "Percentual Considerado": percent if currency == "USD" else 100,
@@ -1309,7 +1324,10 @@ with tab_launch:
             append_dicts(ws_forecast, MAIN_HEADERS, [row])
             if currency == "USD" and quote:
                 append_dicts(ws_quotes, QUOTE_HEADERS, [{"Data": quote_date.strftime("%d/%m/%Y"), "Moeda": "USD", "Compra": "", "Venda": quote, "Fonte": "BCB PTAX", "Consultado Em": now}])
-            st.success("Lançamento salvo.")
+            if already_realized:
+                st.success("Lançamento salvo como já realizado. Ele está no histórico e não foi enviado para as pendências.")
+            else:
+                st.success("Lançamento salvo e enviado para as pendências.")
 
 with tab_forecast:
     review_source_year = selected_year
