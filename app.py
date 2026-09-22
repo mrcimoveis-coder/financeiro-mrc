@@ -1600,9 +1600,19 @@ with tab_forecast:
             .drop(columns=["_type_order", "_launch_order"])
             .reset_index(drop=True)
         )
+        # A coluna numérica nativa do editor usa o separador definido pelo
+        # navegador e, em alguns computadores, bloqueia a vírgula durante a
+        # digitação. Para a matriz, exibimos o valor como texto monetário e
+        # usamos parse_money ao salvar (que aceita 1.234,56 e 1234.56).
+        matrix_editor_source = matrix.copy()
+        for month_name in MESES.values():
+            matrix_editor_source[month_name] = matrix_editor_source[month_name].map(
+                lambda value: format_brl(parse_money(value)).replace("R$ ", "")
+            )
+
         matrix_editor_key = f"annual_matrix_editor_{selected_year}"
         edited_matrix = st.data_editor(
-            matrix,
+            matrix_editor_source,
             use_container_width=True,
             hide_index=True,
             num_rows="dynamic",
@@ -1616,10 +1626,12 @@ with tab_forecast:
                     options=NATURE_OPTIONS, required=True,
                 ),
                 **{
-                    month_name: st.column_config.NumberColumn(
-                        min_value=0.0,
-                        step=100.0,
-                        format="R$ %.2f",
+                    month_name: st.column_config.TextColumn(
+                        month_name,
+                        help=(
+                            "Informe o valor com vírgula ou ponto nos centavos. "
+                            "Exemplos: 1.234,56 ou 1234.56."
+                        ),
                     )
                     for month_name in MESES.values()
                 },
