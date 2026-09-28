@@ -114,6 +114,11 @@ def partner_settlement_balances(
     return {partner: round(value, 2) for partner, value in totals.items()}
 
 
+def partner_settlement_projection_balance(records: list[dict], competence: str) -> float:
+    """Return the net amount that must reduce (or increase, if negative) projected surplus."""
+    return round(sum(partner_settlement_balances(records, competence).values()), 2)
+
+
 def settlement_amount(planned: float, actual: float, close_requested: bool) -> float:
     """Use the planned amount when closing a launch without an informed actual."""
     planned_value = max(float(planned), 0.0)

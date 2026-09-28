@@ -46,6 +46,7 @@ from finance_core import (
     next_competence,
     partner_settlement_balances,
     partner_settlement_competences,
+    partner_settlement_projection_balance,
     projection,
     realization_tracking,
     safe_day,
@@ -872,6 +873,7 @@ ensure_withdrawal_year(ws_withdrawals, 2026)
 ensure_initial_adjustment_rows(ws_loan_marcos, ws_loan_torre, ws_partner_settlements)
 works = normalize_works(load_records(ws_works))
 withdrawals = normalize_withdrawals(load_records(ws_withdrawals))
+partner_records = load_records(ws_partner_settlements)
 works_payable = construction_payables(works)
 sync_construction_balance(ws_balances, works_payable)
 balances_df, brl_balance = account_balances(ws_balances)
@@ -963,7 +965,12 @@ else:
     pending_withdrawals = 0.0
 year_end = float(projected.iloc[-1]["saldo_projetado"]) if not projected.empty else projection_base
 protected = (synced_caution + parameters["reserva_mrc"] + interest_reserve) if is_current_year else 0.0
-active_liabilities = distribution_liabilities if is_current_year else 0.0
+partner_settlement_liability = partner_settlement_projection_balance(
+    partner_records, f"12/{selected_year}"
+) if is_current_year else 0.0
+active_liabilities = (
+    distribution_liabilities + partner_settlement_liability
+) if is_current_year else 0.0
 distributable = distributable_balance(year_end, protected, active_liabilities)
 combined_history = pd.concat([history_launches, launches], ignore_index=True) if not history_launches.empty else launches
 withdrawal_month_limit = today.month if selected_year == today.year else (12 if selected_year < today.year else 0)
@@ -976,6 +983,12 @@ with tab_summary:
     c3.metric("Despesas pendentes", format_brl(pending_expense))
     c4.metric("Retiradas pendentes", format_brl(pending_withdrawals))
     c5.metric("Sobra / falta projetada", format_brl(distributable))
+    if is_current_year and abs(partner_settlement_liability) > 0.005:
+        direction = "reduz" if partner_settlement_liability > 0 else "aumenta"
+        st.caption(
+            "Acertos particulares pendentes de Marcio e Marcelo: "
+            f"{format_brl(partner_settlement_liability)} — este saldo {direction} a sobra projetada."
+        )
     if not is_current_year:
         st.info(
             f"{selected_year} está separado do ano corrente. O saldo base permanece zerado até {selected_year} "
@@ -2614,7 +2627,6 @@ with tab_adjustments:
 
     st.subheader("Acertos particulares — Marcio e Marcelo")
     st.caption("Despesas pagas pessoalmente entram positivas (valor a reembolsar). Créditos, receitas e o acerto no salário entram negativos. Cada competência é encerrada manualmente, sem apagar o histórico. Saldos não zerados são carregados para a competência seguinte.")
-    partner_records = load_records(ws_partner_settlements)
     current_competence = today.strftime("%m/%Y")
     following_competence = next_competence(current_competence)
     competences = partner_settlement_competences(partner_records, today)
