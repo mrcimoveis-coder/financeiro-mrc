@@ -12,6 +12,9 @@ from finance_core import (
     normalize_withdrawals,
     normalize_works,
     operational_balance_item,
+    next_competence,
+    partner_settlement_balances,
+    partner_settlement_competences,
     fx_balance_brl,
     is_advance_customer_payment_balance,
     is_caution_interest_reserve,
@@ -50,6 +53,37 @@ class PartialRealizationTests(unittest.TestCase):
 
     def test_partial_amount_is_not_changed_when_launch_remains_open(self):
         self.assertEqual(settlement_amount(7_000, 2_000, False), 2_000)
+
+    def test_partner_settlement_offers_current_and_following_competence(self):
+        competences = partner_settlement_competences(
+            [{"Competência": "08/2026"}], date(2026, 9, 28)
+        )
+
+        self.assertEqual(competences, ["10/2026", "09/2026", "08/2026"])
+        self.assertEqual(next_competence("12/2026"), "01/2027")
+
+    def test_unsettled_partner_balance_is_carried_to_following_month(self):
+        records = [
+            {"Competência": "09/2026", "Sócio": "Marcelo", "Valor (R$)": "R$ 500,00"},
+            {"Competência": "09/2026", "Sócio": "Marcelo", "Valor (R$)": "R$ -200,00"},
+            {"Competência": "10/2026", "Sócio": "Marcelo", "Valor (R$)": "R$ 50,00"},
+        ]
+
+        opening = partner_settlement_balances(records, "10/2026", include_selected=False)
+        october = partner_settlement_balances(records, "10/2026")
+
+        self.assertEqual(opening["Marcelo"], 300.0)
+        self.assertEqual(october["Marcelo"], 350.0)
+
+    def test_closed_partner_balance_does_not_carry_forward(self):
+        records = [
+            {"Competência": "09/2026", "Sócio": "Marcio", "Valor (R$)": "R$ 300,00"},
+            {"Competência": "09/2026", "Sócio": "Marcio", "Valor (R$)": "R$ -300,00"},
+        ]
+
+        opening = partner_settlement_balances(records, "10/2026", include_selected=False)
+
+        self.assertEqual(opening["Marcio"], 0.0)
 
     def test_withdrawal_summary_matches_2026_example(self):
         profit = [44_000, 52_000, 50_000, 40_000, 44_000, 32_000, 26_000, 30_000, 32_000]

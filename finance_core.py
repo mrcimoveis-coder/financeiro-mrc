@@ -56,6 +56,64 @@ def format_brl(value: float) -> str:
     return f"R$ {float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def parse_competence(value) -> date | None:
+    """Parse a MM/YYYY competence without confusing it with a movement date."""
+    match = re.fullmatch(r"\s*(\d{1,2})/(\d{4})\s*", str(value or ""))
+    if not match:
+        return None
+    month, year = (int(part) for part in match.groups())
+    if not 1 <= month <= 12:
+        return None
+    return date(year, month, 1)
+
+
+def format_competence(value: date) -> str:
+    return value.strftime("%m/%Y")
+
+
+def next_competence(value: str) -> str:
+    parsed = parse_competence(value)
+    if parsed is None:
+        raise ValueError(f"Competência inválida: {value}")
+    if parsed.month == 12:
+        parsed = date(parsed.year + 1, 1, 1)
+    else:
+        parsed = date(parsed.year, parsed.month + 1, 1)
+    return format_competence(parsed)
+
+
+def partner_settlement_competences(records: list[dict], reference_date: date) -> list[str]:
+    """List recorded competences plus the current and following months, newest first."""
+    parsed = {
+        competence
+        for record in records
+        if (competence := parse_competence(record.get("Competência"))) is not None
+    }
+    current = date(reference_date.year, reference_date.month, 1)
+    parsed.add(current)
+    parsed.add(parse_competence(next_competence(format_competence(current))))
+    return [format_competence(item) for item in sorted(parsed, reverse=True)]
+
+
+def partner_settlement_balances(
+    records: list[dict], competence: str, *, include_selected: bool = True
+) -> dict[str, float]:
+    """Return partner balances accumulated through (or before) a competence."""
+    target = parse_competence(competence)
+    if target is None:
+        return {"Marcelo": 0.0, "Marcio": 0.0}
+    totals = {"Marcelo": 0.0, "Marcio": 0.0}
+    for record in records:
+        record_competence = parse_competence(record.get("Competência"))
+        partner = str(record.get("Sócio") or "").strip()
+        if record_competence is None or partner not in totals:
+            continue
+        is_in_period = record_competence <= target if include_selected else record_competence < target
+        if is_in_period:
+            totals[partner] += parse_money(record.get("Valor (R$)"))
+    return {partner: round(value, 2) for partner, value in totals.items()}
+
+
 def settlement_amount(planned: float, actual: float, close_requested: bool) -> float:
     """Use the planned amount when closing a launch without an informed actual."""
     planned_value = max(float(planned), 0.0)

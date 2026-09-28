@@ -43,6 +43,9 @@ from finance_core import (
     normalize_works,
     open_launches,
     parse_money,
+    next_competence,
+    partner_settlement_balances,
+    partner_settlement_competences,
     projection,
     realization_tracking,
     safe_day,
@@ -632,7 +635,11 @@ def loan_ledger(records: list[dict]) -> pd.DataFrame:
     return frame.reset_index(drop=True)
 
 
-def partner_settlement_ledger(records: list[dict], competence: str | None = None) -> pd.DataFrame:
+def partner_settlement_ledger(
+    records: list[dict],
+    competence: str | None = None,
+    opening_balances: dict[str, float] | None = None,
+) -> pd.DataFrame:
     """Keep personal partner adjustments separate from the corporate financial forecast."""
     rows = []
     for sheet_row, record in enumerate(records, start=2):
@@ -656,7 +663,11 @@ def partner_settlement_ledger(records: list[dict], competence: str | None = None
         return frame
     frame["_ordem"] = range(len(frame))
     frame = frame.sort_values(["Sócio", "Data", "_ordem"], na_position="last")
-    frame["Saldo"] = frame.groupby("Sócio")["Valor"].cumsum().round(2)
+    opening_balances = opening_balances or {}
+    frame["Saldo"] = (
+        frame.groupby("Sócio")["Valor"].cumsum()
+        + frame["Sócio"].map(opening_balances).fillna(0.0)
+    ).round(2)
     return frame.drop(columns="_ordem").reset_index(drop=True)
 
 
@@ -2602,22 +2613,41 @@ with tab_adjustments:
     st.divider()
 
     st.subheader("Acertos particulares — Marcio e Marcelo")
-    st.caption("Despesas pagas pessoalmente entram positivas (valor a reembolsar). Créditos, receitas e o acerto no salário entram negativos. Cada competência é encerrada manualmente, sem apagar o histórico.")
+    st.caption("Despesas pagas pessoalmente entram positivas (valor a reembolsar). Créditos, receitas e o acerto no salário entram negativos. Cada competência é encerrada manualmente, sem apagar o histórico. Saldos não zerados são carregados para a competência seguinte.")
     partner_records = load_records(ws_partner_settlements)
-    competences = sorted({clean_editor_text(item.get("Competência")) for item in partner_records if clean_editor_text(item.get("Competência"))}, reverse=True)
     current_competence = today.strftime("%m/%Y")
-    if current_competence not in competences:
-        competences.insert(0, current_competence)
-    selected_settlement_competence = st.selectbox("Competência dos acertos", competences, key="partner_settlement_competence")
-    partner_ledger = partner_settlement_ledger(partner_records, selected_settlement_competence)
-
-    totals = {
-        partner: float(partner_ledger.loc[partner_ledger["Sócio"] == partner, "Valor"].sum())
-        for partner in ("Marcelo", "Marcio")
-    }
+    following_competence = next_competence(current_competence)
+    competences = partner_settlement_competences(partner_records, today)
+    current_is_closed = any(
+        clean_editor_text(item.get("Competência")) == current_competence
+        and normalize_label(item.get("Tipo")) == "acerto salarial"
+        for item in partner_records
+    )
+    suggested_competence = following_competence if current_is_closed else current_competence
+    selected_settlement_competence = st.selectbox(
+        "Competência dos acertos",
+        competences,
+        index=competences.index(suggested_competence),
+        key="partner_settlement_competence",
+        help="A data informa quando o gasto ocorreu; a competência define em qual acerto salarial ele será considerado.",
+    )
+    opening_balances = partner_settlement_balances(
+        partner_records, selected_settlement_competence, include_selected=False
+    )
+    partner_ledger = partner_settlement_ledger(
+        partner_records, selected_settlement_competence, opening_balances
+    )
+    totals = partner_settlement_balances(partner_records, selected_settlement_competence)
     c1, c2 = st.columns(2)
     c1.metric("Saldo Marcelo", format_brl(totals["Marcelo"]), help="Positivo: complementar no salário. Negativo: abater no salário.")
     c2.metric("Saldo Marcio", format_brl(totals["Marcio"]), help="Positivo: complementar no salário. Negativo: abater no salário.")
+
+    if any(abs(value) > 0.005 for value in opening_balances.values()):
+        st.info(
+            "Saldo anterior incorporado nesta competência — "
+            f"Marcelo: {format_brl(opening_balances['Marcelo'])}; "
+            f"Marcio: {format_brl(opening_balances['Marcio'])}."
+        )
 
     if partner_ledger.empty:
         st.info("Não há movimentos nesta competência.")
@@ -2654,6 +2684,10 @@ with tab_adjustments:
             st.rerun()
 
     with st.expander("Adicionar gasto, receita ou crédito"):
+        st.caption(
+            f"O lançamento será incluído na competência {selected_settlement_competence}. "
+            "A data pode permanecer como a data real em que o gasto ou crédito ocorreu."
+        )
         with st.form("partner_settlement_new", clear_on_submit=True):
             a, b, c = st.columns(3)
             movement_date = a.date_input("Data", value=today, format="DD/MM/YYYY")
