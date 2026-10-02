@@ -119,6 +119,17 @@ def partner_settlement_projection_balance(records: list[dict], competence: str) 
     return round(sum(partner_settlement_balances(records, competence).values()), 2)
 
 
+def property_reservation_balance(records: list[dict]) -> float:
+    """Return the total of active property reservations held by the company."""
+    inactive_statuses = {"encerrada", "devolvida", "convertida em locacao", "cancelada"}
+    total = 0.0
+    for record in records:
+        status = normalize_label(record.get("Status") or "Ativa")
+        if status not in inactive_statuses:
+            total += max(parse_money(record.get("Valor da Reserva (R$)")), 0.0)
+    return round(total, 2)
+
+
 def settlement_amount(planned: float, actual: float, close_requested: bool) -> float:
     """Use the planned amount when closing a launch without an informed actual."""
     planned_value = max(float(planned), 0.0)

@@ -47,6 +47,7 @@ from finance_core import (
     partner_settlement_balances,
     partner_settlement_competences,
     partner_settlement_projection_balance,
+    property_reservation_balance,
     projection,
     realization_tracking,
     safe_day,
@@ -105,6 +106,10 @@ DELETED_LAUNCH_HEADERS = [
 LOAN_HEADERS = ["ID", "Data", "Histórico", "Valor (R$)", "Criado Em", "Atualizado Em"]
 PARTNER_SETTLEMENT_HEADERS = [
     "ID", "Competência", "Data", "Sócio", "Tipo", "Histórico", "Valor (R$)", "Criado Em", "Atualizado Em",
+]
+PROPERTY_RESERVATION_HEADERS = [
+    "ID", "Data", "Pretendente", "Imóvel / Endereço", "Valor da Reserva (R$)",
+    "Status", "Observação", "Criado Em", "Atualizado Em",
 ]
 
 STABILIZED_RENT_GOAL_TYPE = "Renda mensal estabilizada (manual)"
@@ -672,6 +677,30 @@ def partner_settlement_ledger(
     return frame.drop(columns="_ordem").reset_index(drop=True)
 
 
+def property_reservation_ledger(records: list[dict]) -> pd.DataFrame:
+    """Prepare property reservations for editing while preserving their sheet rows."""
+    rows = []
+    for sheet_row, record in enumerate(records, start=2):
+        rows.append({
+            "sheet_row": sheet_row,
+            "ID": str(record.get("ID") or ""),
+            "Data": clean_editor_date(record.get("Data")),
+            "Pretendente": clean_editor_text(record.get("Pretendente")),
+            "Imóvel / Endereço": clean_editor_text(record.get("Imóvel / Endereço")),
+            "Valor da Reserva": parse_money(record.get("Valor da Reserva (R$)")),
+            "Status": clean_editor_text(record.get("Status"), "Ativa"),
+            "Observação": clean_editor_text(record.get("Observação")),
+        })
+    frame = pd.DataFrame(rows, columns=[
+        "sheet_row", "ID", "Data", "Pretendente", "Imóvel / Endereço",
+        "Valor da Reserva", "Status", "Observação",
+    ])
+    if frame.empty:
+        return frame
+    frame["_ativa"] = frame["Status"].map(normalize_label).eq("ativa")
+    return frame.sort_values(["_ativa", "Data"], ascending=[False, False], na_position="last").drop(columns="_ativa").reset_index(drop=True)
+
+
 def ensure_initial_adjustment_rows(ws_marcos, ws_torre, ws_partners) -> None:
     """Create the three independent ledgers once, seeded with the balances supplied by MRC."""
     now = datetime.now().strftime("%d/%m/%Y %H:%M")
@@ -849,6 +878,7 @@ try:
     ws_loan_marcos = worksheet("Emprestimo_MRC_Marcos", LOAN_HEADERS, 500)
     ws_loan_torre = worksheet("Emprestimo_MRC_Torre_Forte", LOAN_HEADERS, 500)
     ws_partner_settlements = worksheet("Acertos_Socios", PARTNER_SETTLEMENT_HEADERS, 1000)
+    ws_property_reservations = worksheet("Reservas_Imoveis", PROPERTY_RESERVATION_HEADERS, 1000)
     ws_correction_log = worksheet("Log_Correcoes", CORRECTION_LOG_HEADERS, 1000)
     ws_deleted_launches = worksheet("Lancamentos_Excluidos", DELETED_LAUNCH_HEADERS, 1000)
 except Exception as exc:
@@ -874,6 +904,7 @@ ensure_initial_adjustment_rows(ws_loan_marcos, ws_loan_torre, ws_partner_settlem
 works = normalize_works(load_records(ws_works))
 withdrawals = normalize_withdrawals(load_records(ws_withdrawals))
 partner_records = load_records(ws_partner_settlements)
+property_reservation_records = load_records(ws_property_reservations)
 works_payable = construction_payables(works)
 sync_construction_balance(ws_balances, works_payable)
 balances_df, brl_balance = account_balances(ws_balances)
@@ -968,8 +999,11 @@ protected = (synced_caution + parameters["reserva_mrc"] + interest_reserve) if i
 partner_settlement_liability = partner_settlement_projection_balance(
     partner_records, f"12/{selected_year}"
 ) if is_current_year else 0.0
+property_reservation_liability = property_reservation_balance(
+    property_reservation_records
+) if is_current_year else 0.0
 active_liabilities = (
-    distribution_liabilities + partner_settlement_liability
+    distribution_liabilities + partner_settlement_liability + property_reservation_liability
 ) if is_current_year else 0.0
 distributable = distributable_balance(year_end, protected, active_liabilities)
 combined_history = pd.concat([history_launches, launches], ignore_index=True) if not history_launches.empty else launches
@@ -988,6 +1022,11 @@ with tab_summary:
         st.caption(
             "Acertos particulares pendentes de Marcio e Marcelo: "
             f"{format_brl(partner_settlement_liability)} — este saldo {direction} a sobra projetada."
+        )
+    if is_current_year and property_reservation_liability > 0.005:
+        st.caption(
+            "Reservas ativas recebidas de pretendentes: "
+            f"{format_brl(property_reservation_liability)} — este saldo reduz a sobra projetada."
         )
     if not is_current_year:
         st.info(
@@ -2741,6 +2780,104 @@ with tab_adjustments:
             else:
                 append_dicts(ws_partner_settlements, PARTNER_SETTLEMENT_HEADERS, rows)
                 st.success("Acerto salarial registrado; os saldos foram zerados sem apagar o histórico.")
+                st.rerun()
+
+    st.divider()
+    st.subheader("Reservas de imóveis")
+    st.caption(
+        "Valores recebidos de pretendentes para reservar imóveis. Reservas ativas reduzem a "
+        "Sobra / falta projetada; ao encerrar, o registro permanece no histórico e deixa de afetar o saldo."
+    )
+    reservation_balance = property_reservation_balance(property_reservation_records)
+    st.metric("Saldo de reservas ativas", format_brl(reservation_balance))
+    reservation_ledger = property_reservation_ledger(property_reservation_records)
+    show_closed_reservations = st.checkbox(
+        "Mostrar reservas encerradas",
+        value=False,
+        help="Por padrão, inclusive após a virada do mês, aparecem somente as reservas ativas.",
+    )
+    visible_reservations = reservation_ledger.copy()
+    if not show_closed_reservations and not visible_reservations.empty:
+        visible_reservations = visible_reservations[
+            visible_reservations["Status"].map(normalize_label).eq("ativa")
+        ].reset_index(drop=True)
+
+    if visible_reservations.empty:
+        message = (
+            "Ainda não existem reservas de imóveis cadastradas."
+            if reservation_ledger.empty
+            else "Não há reservas ativas. Marque a opção acima para consultar as encerradas."
+        )
+        st.info(message)
+    else:
+        reservation_editor = st.data_editor(
+            visible_reservations,
+            use_container_width=True,
+            hide_index=True,
+            disabled=["sheet_row", "ID"],
+            column_config={
+                "sheet_row": None,
+                "ID": None,
+                "Data": st.column_config.DateColumn(format="DD/MM/YYYY", required=True),
+                "Pretendente": st.column_config.TextColumn(required=True),
+                "Imóvel / Endereço": st.column_config.TextColumn(required=True),
+                "Valor da Reserva": st.column_config.NumberColumn(format="R$ %.2f", min_value=0.01, required=True),
+                "Status": st.column_config.SelectboxColumn(options=["Ativa", "Encerrada"], required=True),
+                "Observação": st.column_config.TextColumn(),
+            },
+            key="property_reservation_editor",
+        )
+        if st.button("Salvar alterações das reservas", key="property_reservation_save", type="primary"):
+            invalid_rows = reservation_editor[
+                reservation_editor["Data"].isna()
+                | reservation_editor["Pretendente"].fillna("").astype(str).str.strip().eq("")
+                | reservation_editor["Imóvel / Endereço"].fillna("").astype(str).str.strip().eq("")
+                | (reservation_editor["Valor da Reserva"].fillna(0).astype(float) <= 0)
+            ]
+            if not invalid_rows.empty:
+                st.error("Preencha data, pretendente, imóvel e um valor maior que zero em todas as reservas.")
+            else:
+                now = datetime.now().strftime("%d/%m/%Y %H:%M")
+                for _, item in reservation_editor.iterrows():
+                    reservation_date = clean_editor_date(item["Data"])
+                    update_row(ws_property_reservations, int(item["sheet_row"]), {
+                        "Data": reservation_date.strftime("%d/%m/%Y") if reservation_date else "",
+                        "Pretendente": clean_editor_text(item["Pretendente"]),
+                        "Imóvel / Endereço": clean_editor_text(item["Imóvel / Endereço"]),
+                        "Valor da Reserva (R$)": format_brl(float(item["Valor da Reserva"])),
+                        "Status": clean_editor_text(item["Status"], "Ativa"),
+                        "Observação": clean_editor_text(item["Observação"]),
+                        "Atualizado Em": now,
+                    })
+                st.success("Reservas atualizadas.")
+                st.rerun()
+
+    with st.expander("Cadastrar nova reserva"):
+        with st.form("property_reservation_new", clear_on_submit=True):
+            a, b = st.columns(2)
+            reservation_date = a.date_input("Data da reserva", value=today, format="DD/MM/YYYY")
+            reservation_amount = b.number_input("Valor da reserva", min_value=0.0, step=100.0)
+            prospective_tenant = st.text_input("Nome do pretendente")
+            property_address = st.text_input("Imóvel / Endereço")
+            reservation_notes = st.text_area("Observação")
+            add_reservation = st.form_submit_button("Registrar reserva", type="primary")
+        if add_reservation:
+            if not prospective_tenant.strip() or not property_address.strip() or reservation_amount <= 0:
+                st.error("Informe o pretendente, o imóvel e um valor maior que zero.")
+            else:
+                now = datetime.now().strftime("%d/%m/%Y %H:%M")
+                append_dicts(ws_property_reservations, PROPERTY_RESERVATION_HEADERS, [{
+                    "ID": new_id("RESERVA"),
+                    "Data": reservation_date.strftime("%d/%m/%Y"),
+                    "Pretendente": prospective_tenant.strip(),
+                    "Imóvel / Endereço": property_address.strip(),
+                    "Valor da Reserva (R$)": format_brl(reservation_amount),
+                    "Status": "Ativa",
+                    "Observação": reservation_notes.strip(),
+                    "Criado Em": now,
+                    "Atualizado Em": now,
+                }])
+                st.success("Reserva registrada e descontada da sobra projetada.")
                 st.rerun()
 
 

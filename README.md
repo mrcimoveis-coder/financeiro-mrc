@@ -24,6 +24,7 @@ Aplicativo Streamlit integrado ao Google Sheets `Financeiro_MRC`.
 - As metas definidas nas reuniões dos sócios ficam vinculadas ao respectivo ano e mostram o valor atingido com base nas receitas realizadas ou em uma apuração manual.
 - A aba Retiradas registra por mês o pró-labore, a distribuição de lucros e as retiradas adicionais, com total e média por sócio. É um controle histórico e não reduz novamente o saldo bancário.
 - Nos acertos particulares dos sócios, o mês seguinte fica disponível antecipadamente, a data real do movimento é preservada e qualquer saldo não zerado é carregado automaticamente para a competência seguinte. O saldo positivo reduz a sobra projetada; o saldo negativo aumenta a sobra até o acerto ser zerado.
+- A aba Acertos também registra reservas recebidas de pretendentes, com nome, imóvel e valor. Somente reservas ativas reduzem a sobra projetada; reservas encerradas permanecem no histórico sem afetar o cálculo.
 - O Histórico preserva o consolidado mensal de receitas e despesas realizadas e os lançamentos antigos ainda pendentes.
 - Lançamentos em dólar podem utilizar automaticamente a PTAX de venda do Banco Central.
 

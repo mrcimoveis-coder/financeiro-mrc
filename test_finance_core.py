@@ -16,6 +16,7 @@ from finance_core import (
     partner_settlement_balances,
     partner_settlement_competences,
     partner_settlement_projection_balance,
+    property_reservation_balance,
     fx_balance_brl,
     is_advance_customer_payment_balance,
     is_caution_interest_reserve,
@@ -96,6 +97,18 @@ class PartialRealizationTests(unittest.TestCase):
 
         self.assertEqual(liability, 250.0)
         self.assertEqual(distributable_balance(1_000, 0, liability), 750.0)
+
+    def test_only_active_property_reservations_reduce_projected_surplus(self):
+        records = [
+            {"Status": "Ativa", "Valor da Reserva (R$)": "R$ 1.500,00"},
+            {"Status": "Encerrada", "Valor da Reserva (R$)": "R$ 800,00"},
+            {"Status": "Devolvida", "Valor da Reserva (R$)": "R$ 300,00"},
+        ]
+
+        reservations = property_reservation_balance(records)
+
+        self.assertEqual(reservations, 1_500.0)
+        self.assertEqual(distributable_balance(10_000, 0, reservations), 8_500.0)
 
     def test_withdrawal_summary_matches_2026_example(self):
         profit = [44_000, 52_000, 50_000, 40_000, 44_000, 32_000, 26_000, 30_000, 32_000]
