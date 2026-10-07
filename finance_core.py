@@ -296,6 +296,23 @@ def construction_payables(works: pd.DataFrame) -> float:
     return float(works["falta_pagar"].sum())
 
 
+def works_for_month(works: pd.DataFrame, year: int, month: int) -> pd.DataFrame:
+    """Exibe as obras do mês selecionado e pendências de competências anteriores.
+
+    A competência original é preservada para manter o histórico mensal. Uma obra
+    anterior só continua sendo carregada enquanto houver saldo a pagar ao
+    prestador; obras concluídas ou canceladas permanecem apenas no seu mês.
+    """
+    if works.empty:
+        return works.copy()
+    reference = pd.Timestamp(int(year), int(month), 1)
+    competence = works["competencia"]
+    active = works["status"] != "Cancelada"
+    current_month = competence == reference
+    older_payable = (competence < reference) & (works["falta_pagar"] > 0.005)
+    return works[competence.notna() & active & (current_month | older_payable)].copy()
+
+
 def monthly_work_summary(works: pd.DataFrame, year: int) -> pd.DataFrame:
     months = pd.DataFrame({"competencia": pd.date_range(f"{year}-01-01", f"{year}-12-01", freq="MS")})
     months["mes"] = months["competencia"].dt.month.map(MESES)
