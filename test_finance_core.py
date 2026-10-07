@@ -11,6 +11,7 @@ from finance_core import (
     normalize_launches,
     normalize_withdrawals,
     normalize_works,
+    works_for_month,
     operational_balance_item,
     next_competence,
     partner_settlement_balances,
@@ -195,6 +196,51 @@ class PartialRealizationTests(unittest.TestCase):
         self.assertEqual(september["cobrado"], 8500)
         self.assertEqual(september["custo_previsto"], 5850)
         self.assertEqual(september["lucro_previsto"], 2650)
+
+    def test_month_keeps_current_works_and_carries_only_older_payables(self):
+        works = normalize_works([
+            {
+                "Competência": "09/2026", "Obra / Histórico": "Pendente anterior",
+                "Custo Previsto (R$)": 1_700, "Valor Pago (R$)": 700,
+                "Status": "Parcial",
+            },
+            {
+                "Competência": "09/2026", "Obra / Histórico": "Quitada anterior",
+                "Custo Previsto (R$)": 3_200, "Valor Pago (R$)": 3_200,
+                "Status": "Concluída",
+            },
+            {
+                "Competência": "10/2026", "Obra / Histórico": "Obra de outubro",
+                "Custo Previsto (R$)": 800, "Valor Pago (R$)": 0,
+                "Status": "Em andamento",
+            },
+            {
+                "Competência": "11/2026", "Obra / Histórico": "Obra futura",
+                "Custo Previsto (R$)": 500, "Valor Pago (R$)": 0,
+                "Status": "Em andamento",
+            },
+        ])
+
+        october = works_for_month(works, 2026, 10)
+
+        self.assertEqual(set(october["obra"]), {"Pendente anterior", "Obra de outubro"})
+        self.assertEqual(construction_payables(october), 1_800)
+        self.assertEqual(distributable_balance(5_000, 0, construction_payables(october)), 3_200)
+        september = monthly_work_summary(works, 2026).iloc[8]
+        self.assertEqual(september["custo_previsto"], 4_900)
+        self.assertEqual(september["pago"], 3_900)
+
+    def test_previous_year_payable_carries_into_january(self):
+        works = normalize_works([{
+            "Competência": "12/2026", "Obra / Histórico": "Saldo da virada",
+            "Custo Previsto (R$)": 900, "Valor Pago (R$)": 400,
+            "Status": "Parcial",
+        }])
+
+        january = works_for_month(works, 2027, 1)
+
+        self.assertEqual(january.iloc[0]["obra"], "Saldo da virada")
+        self.assertEqual(january.iloc[0]["falta_pagar"], 500)
 
     def test_cancelled_work_does_not_create_payable_or_profit(self):
         works = normalize_works([{
