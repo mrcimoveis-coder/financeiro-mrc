@@ -56,7 +56,6 @@ from finance_core import (
     safe_day,
     settlement_amount,
     sales_for_month,
-    sales_pending_forecast,
     suggest_next_year_forecast,
     variance,
     withdrawal_summary,
@@ -1033,10 +1032,6 @@ tab_summary, tab_pending, tab_launch, tab_forecast, tab_works, tab_sales, tab_wi
 
 monthly = monthly_forecast(launches, selected_year)
 sales_monthly = monthly_sales_summary(sales, selected_year)
-sales_pending = sales_pending_forecast(sales, selected_year, today)
-monthly["receitas"] += sales_pending["vendas_a_receber"].to_numpy()
-monthly["resultado"] = monthly["receitas"] - monthly["despesas"]
-monthly["movimento_caixa"] = monthly["resultado"] - monthly["retiradas"]
 is_current_year = selected_year == today.year
 projection_base = bank_balance if is_current_year else 0.0
 projection_date = today if is_current_year else date(selected_year, 1, 1)
@@ -1059,9 +1054,6 @@ if not open_df.empty:
 else:
     future_open = open_df
 pending_income = float(future_open.loc[future_open["tipo"] == "Receita", "pendente"].sum()) if not future_open.empty else 0.0
-if not sales.empty:
-    pending_sales = sales[(sales["competencia"].dt.year == selected_year) & (sales["a_receber"] > 0.005)]
-    pending_income += float(pending_sales["a_receber"].sum())
 if not future_open.empty:
     future_withdrawals = future_open["natureza"].map(is_profit_withdrawal_nature)
     pending_expense = float(
@@ -2319,7 +2311,8 @@ with tab_sales:
     st.subheader("Vendas e comissões")
     st.caption(
         "Cadastre a comissão da venda e atualize o valor recebido acumulado. Uma venda antiga só continua "
-        "aparecendo nos meses seguintes enquanto houver saldo a receber. O saldo bancário permanece manual.")
+        "aparecendo nos meses seguintes enquanto houver saldo a receber. Vendas pendentes não alteram a "
+        "sobra nem a projeção; após receber, atualize o saldo bancário manualmente na aba Saldos.")
 
     sales_month = st.selectbox(
         "Mês das vendas", list(MESES), index=(today.month - 1 if selected_year == today.year else 0),
