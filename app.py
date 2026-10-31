@@ -1172,11 +1172,9 @@ with tab_summary:
 
     st.subheader("Receitas e despesas realizadas até o momento")
     current_month = pd.Timestamp(today.year, today.month, 1)
+    # Os recebimentos de vendas já estão nos lançamentos realizados do financeiro.
+    # A aba Vendas apenas os separa para análise, sem somá-los novamente.
     quick_history = monthly_realized_history(combined_history, selected_year)
-    # Vendas ficam em uma base própria para preservar comprador, vendedor e saldo,
-    # mas seus recebimentos também compõem a receita realizada do financeiro.
-    quick_history["receitas_realizadas"] += sales_monthly["recebido"].to_numpy()
-    quick_history["resultado_realizado"] += sales_monthly["recebido"].to_numpy()
     if selected_year == today.year:
         quick_history = quick_history[quick_history["competencia"] <= current_month]
     elif selected_year > today.year:
@@ -2434,27 +2432,32 @@ with tab_sales:
     regular_revenue = float(tracked[
         (tracked["competencia"].dt.year == selected_year) & (tracked["tipo"] == "Receita")
     ]["realizado"].sum()) if not tracked.empty else 0.0
-    other_revenue = max(regular_revenue - rent_total, 0.0)
     sales_billed = float(sales_monthly["comissao"].sum())
     sales_received = float(sales_monthly["recebido"].sum())
+    non_sales_revenue = max(regular_revenue - sales_received, 0.0)
     b1, b2, b3, b4 = st.columns(4)
     b1.metric("Vendas faturadas", format_brl(sales_billed))
     b2.metric("Vendas recebidas", format_brl(sales_received))
-    b3.metric("Aluguel realizado", format_brl(rent_total))
-    b4.metric("Faturamento total", format_brl(sales_billed + rent_total + other_revenue))
-    st.caption("O total inclui aluguel, comissões de vendas e demais receitas como juros. A diferença entre comissão faturada e recebida permanece visível como saldo a receber.")
+    b3.metric("Aluguel e demais receitas", format_brl(non_sales_revenue))
+    b4.metric("Faturamento total", format_brl(regular_revenue))
+    st.caption("O total já considera as comissões de vendas registradas no financeiro. A linha de vendas é exibida separadamente, sem duplicar o faturamento.")
 
     historical_billing = []
     for record in load_records(ws_billing_history):
         historical_billing.append({
             "Ano": int(str(record.get("Ano") or 0) or 0), "Vendas": parse_money(record.get("Vendas (R$)")),
-            "Aluguel": parse_money(record.get("Aluguel (R$)")), "Outras receitas": 0.0,
+            "Aluguel e demais receitas": parse_money(record.get("Aluguel (R$)")),
             "Total": parse_money(record.get("Total (R$)")),
         })
     historical_billing = [item for item in historical_billing if item["Ano"] and item["Ano"] != selected_year]
-    historical_billing.append({"Ano": selected_year, "Vendas": sales_billed, "Aluguel": rent_total, "Outras receitas": other_revenue, "Total": sales_billed + rent_total + other_revenue})
+    historical_billing.append({
+        "Ano": selected_year,
+        "Vendas": sales_received,
+        "Aluguel e demais receitas": non_sales_revenue,
+        "Total": regular_revenue,
+    })
     billing_view = pd.DataFrame(sorted(historical_billing, key=lambda item: item["Ano"], reverse=True))
-    display_money_table(billing_view, ["Vendas", "Aluguel", "Outras receitas", "Total"])
+    display_money_table(billing_view, ["Vendas", "Aluguel e demais receitas", "Total"])
 
 with tab_withdrawals:
     st.subheader(f"Retiradas dos sócios em {selected_year}")
