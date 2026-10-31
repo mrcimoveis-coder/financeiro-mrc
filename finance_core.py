@@ -337,6 +337,90 @@ def monthly_work_summary(works: pd.DataFrame, year: int) -> pd.DataFrame:
     return months.merge(grouped, on="competencia", how="left").fillna(0.0)
 
 
+def normalize_sales(records: list[dict], default_year: int = 2026) -> pd.DataFrame:
+    """Normalize property-sale commissions without mixing them into ordinary launches."""
+    rows = []
+    for sheet_row, record in enumerate(records, start=2):
+        competence = month_start(record.get("Competência"), default_year)
+        commission = parse_money(record.get("Valor Comissão (R$)"))
+        received = min(parse_money(record.get("Valor Recebido (R$)")), commission)
+        raw_status = normalize_label(record.get("Status") or "Pendente")
+        if raw_status == "cancelada":
+            status = "Cancelada"
+        elif commission > 0 and received >= commission - 0.005:
+            status = "Quitada"
+        elif received > 0:
+            status = "Parcial"
+        else:
+            status = "Pendente"
+        active = status not in {"Quitada", "Cancelada"}
+        rows.append({
+            "sheet_row": sheet_row,
+            "id": str(record.get("ID") or "").strip(),
+            "competencia": competence,
+            "imovel": str(record.get("Imóvel") or "").strip(),
+            "valor_imovel": parse_money(record.get("Valor do Imóvel (R$)")),
+            "percentual_comissao": parse_money(record.get("% Comissão")),
+            "comissao": commission,
+            "recebido": received,
+            "a_receber": max(commission - received, 0.0) if active else 0.0,
+            "vendedor": str(record.get("Vendedor") or "").strip(),
+            "telefone_vendedor": str(record.get("Telefone Vendedor") or "").strip(),
+            "comprador": str(record.get("Comprador") or "").strip(),
+            "telefone_comprador": str(record.get("Telefone Comprador") or "").strip(),
+            "status": status,
+            "observacao": str(record.get("Observação") or "").strip(),
+        })
+    return pd.DataFrame(rows)
+
+
+def sales_for_month(sales: pd.DataFrame, year: int, month: int) -> pd.DataFrame:
+    """Show current sales and only older commissions that still have a balance receivable."""
+    if sales.empty:
+        return sales.copy()
+    reference = pd.Timestamp(int(year), int(month), 1)
+    competence = sales["competencia"]
+    active = sales["status"].isin({"Pendente", "Parcial"})
+    current = competence == reference
+    older_open = (competence < reference) & active & (sales["a_receber"] > 0.005)
+    return sales[competence.notna() & (current | older_open)].copy()
+
+
+def monthly_sales_summary(sales: pd.DataFrame, year: int) -> pd.DataFrame:
+    """Return commission billing and receipts by original sale competence."""
+    months = pd.DataFrame({"competencia": pd.date_range(f"{year}-01-01", f"{year}-12-01", freq="MS")})
+    months["mes"] = months["competencia"].dt.month.map(MESES)
+    columns = ["comissao", "recebido", "a_receber"]
+    if sales.empty:
+        for column in columns:
+            months[column] = 0.0
+        return months
+    valid = sales[sales["competencia"].notna() & (sales["competencia"].dt.year == int(year))].copy()
+    if valid.empty:
+        for column in columns:
+            months[column] = 0.0
+        return months
+    grouped = valid.groupby("competencia", dropna=False)[columns].sum().reset_index()
+    return months.merge(grouped, on="competencia", how="left").fillna(0.0)
+
+
+def sales_pending_forecast(sales: pd.DataFrame, year: int, reference_date: date) -> pd.DataFrame:
+    """Allocate open commissions to the sale month or to the current month when carried forward."""
+    months = pd.DataFrame({"competencia": pd.date_range(f"{year}-01-01", f"{year}-12-01", freq="MS")})
+    months["vendas_a_receber"] = 0.0
+    if sales.empty:
+        return months
+    active = sales[(sales["status"].isin({"Pendente", "Parcial"})) & (sales["a_receber"] > 0.005)].copy()
+    if active.empty:
+        return months
+    reference = pd.Timestamp(reference_date.year, reference_date.month, 1)
+    active["competencia_fluxo"] = active["competencia"].where(active["competencia"] >= reference, reference)
+    active = active[active["competencia_fluxo"].dt.year == int(year)]
+    grouped = active.groupby("competencia_fluxo")["a_receber"].sum().reset_index()
+    grouped = grouped.rename(columns={"competencia_fluxo": "competencia", "a_receber": "vendas_a_receber"})
+    return months.drop(columns=["vendas_a_receber"]).merge(grouped, on="competencia", how="left").fillna(0.0)
+
+
 def normalize_withdrawals(records: list[dict], default_year: int = 2026) -> pd.DataFrame:
     rows = []
     for sheet_row, record in enumerate(records, start=2):
@@ -720,3 +804,4 @@ def safe_day(value: int) -> int:
 
 def clean_key(value: str) -> str:
     return re.sub(r"[^a-z0-9_]+", "_", str(value).strip().lower()).strip("_")
+
