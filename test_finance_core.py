@@ -7,10 +7,12 @@ from finance_core import (
     distributable_balance,
     monthly_forecast,
     monthly_realized_history,
+    monthly_sales_summary,
     monthly_work_summary,
     normalize_launches,
     normalize_withdrawals,
     normalize_works,
+    normalize_sales,
     works_for_month,
     operational_balance_item,
     next_competence,
@@ -28,6 +30,8 @@ from finance_core import (
     projection,
     realization_tracking,
     settlement_amount,
+    sales_for_month,
+    sales_pending_forecast,
     suggest_next_year_forecast,
     variance,
     withdrawal_summary,
@@ -48,6 +52,33 @@ def launch(description, launch_type, planned, actual, status):
 
 
 class PartialRealizationTests(unittest.TestCase):
+    def test_sales_carry_forward_only_while_commission_is_open(self):
+        sales = normalize_sales([
+            {"Competência": "01/2026", "Imóvel": "Em aberto", "Valor Comissão (R$)": 10_000, "Valor Recebido (R$)": 4_000},
+            {"Competência": "01/2026", "Imóvel": "Quitada", "Valor Comissão (R$)": 5_000, "Valor Recebido (R$)": 5_000},
+            {"Competência": "02/2026", "Imóvel": "Nova", "Valor Comissão (R$)": 3_000, "Valor Recebido (R$)": 0},
+        ])
+        february = sales_for_month(sales, 2026, 2)
+        self.assertEqual(set(february["imovel"]), {"Em aberto", "Nova"})
+        self.assertEqual(float(february["a_receber"].sum()), 9_000)
+
+    def test_open_old_sale_is_projected_in_current_month(self):
+        sales = normalize_sales([
+            {"Competência": "01/2026", "Imóvel": "Em aberto", "Valor Comissão (R$)": 10_000, "Valor Recebido (R$)": 4_000},
+        ])
+        projected = sales_pending_forecast(sales, 2026, date(2026, 3, 15))
+        self.assertEqual(float(projected.iloc[0]["vendas_a_receber"]), 0)
+        self.assertEqual(float(projected.iloc[2]["vendas_a_receber"]), 6_000)
+
+    def test_monthly_sales_summary_keeps_billed_and_received_separate(self):
+        sales = normalize_sales([
+            {"Competência": "01/2026", "Imóvel": "Parcial", "Valor Comissão (R$)": 10_000, "Valor Recebido (R$)": 4_000},
+        ])
+        january = monthly_sales_summary(sales, 2026).iloc[0]
+        self.assertEqual(january["comissao"], 10_000)
+        self.assertEqual(january["recebido"], 4_000)
+        self.assertEqual(january["a_receber"], 6_000)
+
     def test_closing_without_actual_assumes_planned_amount(self):
         self.assertEqual(settlement_amount(7_000, 0, True), 7_000)
 
@@ -392,3 +423,4 @@ class PartialRealizationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
