@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 42762)
-Total output lines: 3290
-
 from __future__ import annotations
 
 import io
@@ -1280,7 +1277,946 @@ with tab_summary:
     else:
         total_remaining = pd.DataFrame([{
             "Mês": "TOTAL PENDENTE",
-           …12762 tokens truncated….NumberColumn(min_value=0.0, format="R$ %.2f"),
+            "Receitas a receber": remaining_view["Receitas a receber"].sum(),
+            "Despesas a pagar": remaining_view["Despesas a pagar"].sum(),
+            "Retiradas de lucros": remaining_view["Retiradas de lucros"].sum(),
+            "Movimento no caixa": remaining_view["Movimento no caixa"].sum(),
+        }])
+        remaining_view = pd.concat([remaining_view, total_remaining], ignore_index=True)
+        display_money_table(
+            remaining_view,
+            ["Receitas a receber", "Despesas a pagar", "Retiradas de lucros", "Movimento no caixa"],
+        )
+
+with tab_pending:
+    st.subheader("Lançamentos do mês")
+    st.caption(
+        "Informe o total pago ou recebido até agora. A projeção considera somente o saldo que ainda falta. "
+        "Use Encerrar quando o lançamento terminou com valor diferente do previsto."
+    )
+    if open_df.empty:
+        st.success("Não há lançamentos pendentes.")
+    else:
+        f1, f2 = st.columns(2)
+        default_month = today.month if selected_year == today.year else 1
+        month_filter = f1.selectbox(
+            "Mês",
+            list(MESES),
+            index=default_month - 1,
+            format_func=lambda item: MESES[item],
+            key="pending_month",
+        )
+        type_filter = f2.selectbox("Tipo", ["Todos", "Receita", "Despesa"], key="pending_type")
+        filtered = open_df[
+            (open_df["competencia"].dt.year == selected_year)
+            & (open_df["competencia"].dt.month == month_filter)
+        ].copy()
+        if type_filter != "Todos":
+            filtered = filtered[filtered["tipo"] == type_filter]
+        if filtered.empty:
+            st.info("Nenhum lançamento aberto neste mês.")
+        else:
+            filtered = filtered.sort_values(["vencimento", "tipo", "historico"]).reset_index(drop=True)
+            editor_source = pd.DataFrame({
+                "Encerrar": False,
+                "Vencimento": filtered["vencimento"].dt.strftime("%d/%m/%Y"),
+                "Tipo": filtered["tipo"],
+                "Lançamento": filtered["historico"],
+                "Situação": filtered["status"],
+                "Previsto": filtered["previsto"].astype(float),
+                "Pago / recebido acumulado": filtered["realizado"].astype(float),
+                "A pagar / receber": filtered["pendente"].astype(float),
+                "sheet_row": filtered["sheet_row"].astype(int),
+                "serie_id": filtered["serie_id"],
+                "competencia": filtered["competencia"],
+            })
+            edited = st.data_editor(
+                editor_source,
+                use_container_width=True,
+                hide_index=True,
+                disabled=["Vencimento", "Tipo", "Lançamento", "Situação", "A pagar / receber", "sheet_row", "serie_id", "competencia"],
+                column_config={
+                    "Encerrar": st.column_config.CheckboxColumn("Encerrar"),
+                    "Previsto": st.column_config.NumberColumn("Valor previsto", min_value=0.0, format="R$ %.2f"),
+                    "Pago / recebido acumulado": st.column_config.NumberColumn(
+                        "Pago / recebido acumulado", min_value=0.0, format="R$ %.2f"
+                    ),
+                    "A pagar / receber": st.column_config.NumberColumn("A pagar / receber", format="R$ %.2f"),
+                    "sheet_row": None,
+                    "serie_id": None,
+                    "competencia": None,
+                },
+                key=f"month_editor_{selected_year}_{month_filter}",
+            )
+            propagate = st.checkbox("Aplicar mudanças no valor previsto também aos meses seguintes da mesma série")
+            if st.button("Salvar alterações do mês", type="primary"):
+                changed = 0
+                settled = 0
+                partial = 0
+                for index, edited_row in edited.iterrows():
+                    original = editor_source.iloc[index]
+                    updates = {}
+                    planned = float(edited_row["Previsto"])
+                    close_requested = bool(edited_row["Encerrar"])
+                    actual = settlement_amount(
+                        planned,
+                        float(edited_row["Pago / recebido acumulado"]),
+                        close_requested,
+                    )
+                    planned_changed = abs(planned - float(original["Previsto"])) > 0.005
+                    actual_changed = abs(actual - float(original["Pago / recebido acumulado"])) > 0.005
+                    if planned_changed:
+                        updates.update({
+                            "Valor (R$)": format_brl(planned),
+                            "Valor Previsto (R$)": format_brl(planned),
+                        })
+                        changed += 1
+                        if propagate and str(edited_row["serie_id"]).strip():
+                            later = open_df[
+                                (open_df["serie_id"] == edited_row["serie_id"])
+                                & (open_df["competencia"] > edited_row["competencia"])
+                            ]
+                            for _, later_row in later.iterrows():
+                                update_row(ws_forecast, int(later_row["sheet_row"]), {
+                                    "Valor (R$)": format_brl(planned),
+                                    "Valor Previsto (R$)": format_brl(planned),
+                                    "Atualizado Em": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                                })
+                    close_launch = close_requested or (planned > 0 and actual >= planned)
+                    if close_launch:
+                        updates.update({
+                            "Status": "Recebido" if edited_row["Tipo"] == "Receita" else "Pago",
+                            "Valor Realizado (R$)": format_brl(actual),
+                            "Data Quitação": today.strftime("%d/%m/%Y"),
+                        })
+                        settled += 1
+                    elif actual > 0 and actual_changed:
+                        updates.update({
+                            "Status": "Parcial",
+                            "Valor Realizado (R$)": format_brl(actual),
+                            "Data Quitação": "",
+                        })
+                        if actual_changed:
+                            partial += 1
+                    elif actual_changed:
+                        updates.update({
+                            "Status": "Pendente",
+                            "Valor Realizado (R$)": "",
+                            "Data Quitação": "",
+                        })
+                    if updates:
+                        updates["Atualizado Em"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+                        update_row(ws_forecast, int(edited_row["sheet_row"]), updates)
+                st.success(
+                    f"Alterações salvas: {changed} previsto(s) ajustado(s), "
+                    f"{partial} parcial(is) e {settled} encerrado(s)."
+                )
+                if partial or settled:
+                    st.warning("Confirme que os valores realizados já estão refletidos nos saldos reais das contas.")
+                st.rerun()
+
+with tab_launch:
+    st.subheader("Cadastrar receita ou despesa")
+    with st.form("new_launch", clear_on_submit=True):
+        a, b, c = st.columns(3)
+        launch_type = a.radio("Tipo", ["Despesa", "Receita"], horizontal=True)
+        description = b.text_input("Descrição")
+        category = c.text_input("Categoria", value="OUTRO")
+        d, e, f = st.columns(3)
+        due = d.date_input("Vencimento", value=today, format="DD/MM/YYYY")
+        currency = e.selectbox("Moeda", ["BRL", "USD"])
+        amount = f.number_input("Valor previsto", min_value=0.0, step=100.0)
+        g, h, i = st.columns(3)
+        nature = g.selectbox("Natureza", NATURE_OPTIONS)
+        involved = h.text_input("Envolvido")
+        account = i.text_input("Conta")
+        launch_state = st.radio(
+            "Situação do lançamento",
+            ["Enviar para pendências", "Já pago / recebido"],
+            horizontal=True,
+            help=(
+                "Use 'Já pago / recebido' quando o valor já estiver refletido no saldo bancário. "
+                "O lançamento ficará no histórico e não entrará nas pendências."
+            ),
+        )
+        notes = st.text_area("Observações")
+        submit_launch = st.form_submit_button("Salvar lançamento", type="primary")
+    if submit_launch:
+        if not description or amount <= 0:
+            st.error("Informe a descrição e um valor maior que zero.")
+        else:
+            quote, quote_date = ptax_sale(today)
+            percent = parameters["percentual_usd"]
+            manual_quote = parameters["cotacao_manual_usd"]
+            used_quote = manual_quote or quote or 0.0
+            planned_brl = amount if currency == "BRL" else amount * used_quote * percent / 100.0
+            now = datetime.now().strftime("%d/%m/%Y %H:%M")
+            already_realized = launch_state == "Já pago / recebido"
+            launch_status = (
+                "Recebido" if launch_type == "Receita" else "Pago"
+            ) if already_realized else "Pendente"
+            row = {
+                "Mês": MESES[due.month], "Tipo de Operação": launch_type, "Categoria": category,
+                "Corretor / Envolvido": involved, "Histórico": description, "Valor (R$)": format_brl(planned_brl),
+                "Status": launch_status, "Observação": notes, "ID": new_id(), "Competência": due.strftime("%m/%Y"),
+                "Vencimento": due.strftime("%d/%m/%Y"), "Valor Previsto (R$)": format_brl(planned_brl),
+                "Valor Realizado (R$)": format_brl(planned_brl) if already_realized else "",
+                "Data Quitação": today.strftime("%d/%m/%Y") if already_realized else "",
+                "Conta": account, "Natureza": nature,
+                "Série ID": "", "Criado Em": now, "Atualizado Em": now, "Moeda": currency,
+                "Valor na Moeda": amount if currency == "USD" else "", "Cotação Utilizada": used_quote if currency == "USD" else "",
+                "Percentual Considerado": percent if currency == "USD" else 100,
+            }
+            append_dicts(ws_forecast, MAIN_HEADERS, [row])
+            if currency == "USD" and quote:
+                append_dicts(ws_quotes, QUOTE_HEADERS, [{"Data": quote_date.strftime("%d/%m/%Y"), "Moeda": "USD", "Compra": "", "Venda": quote, "Fonte": "BCB PTAX", "Consultado Em": now}])
+            if already_realized:
+                st.success("Lançamento salvo como já realizado. Ele está no histórico e não foi enviado para as pendências.")
+            else:
+                st.success("Lançamento salvo e enviado para as pendências.")
+
+with tab_forecast:
+    review_source_year = selected_year
+    review_target_year = selected_year + 1
+    st.subheader(f"Preparar forecast de {review_target_year}")
+    st.caption(
+        f"O sistema analisa {review_source_year} e cria sugestões para sua conferência. "
+        f"Nada entra em {review_target_year} antes da sua aprovação e esse forecast não altera {review_source_year}."
+    )
+    if st.button(f"Gerar sugestões para {review_target_year}", type="primary"):
+        suggestions = suggest_next_year_forecast(combined_history, review_source_year, review_target_year)
+        existing_reviews = load_records(ws_forecast_review)
+        existing_keys = {
+            str(row.get("Chave Origem") or "").strip()
+            for row in existing_reviews
+            if str(row.get("Ano Destino") or "").strip() == str(review_target_year)
+        }
+        now = datetime.now().strftime("%d/%m/%Y %H:%M")
+        review_rows = []
+        for _, suggestion in suggestions.iterrows():
+            if suggestion["origem_chave"] in existing_keys:
+                continue
+            review_rows.append({
+                "Revisão ID": new_id("REV"), "Ano Origem": review_source_year,
+                "Ano Destino": review_target_year, "Chave Origem": suggestion["origem_chave"],
+                "Decisão": "Pendente", "Tipo": suggestion["tipo"],
+                "Categoria": suggestion["categoria"], "Lançamento": suggestion["historico"],
+                "Envolvido": suggestion["envolvido"], "Conta": suggestion["conta"],
+                "Natureza": suggestion["natureza"],
+                "Valor Sugerido (R$)": format_brl(suggestion["valor_sugerido"]),
+                "Periodicidade": suggestion["periodicidade"],
+                "Primeiro Vencimento": suggestion["primeiro_vencimento"].strftime("%d/%m/%Y"),
+                "Ocorrências": int(suggestion["ocorrencias"]),
+                "Dia do Vencimento": int(suggestion["dia_vencimento"]),
+                "Observação": suggestion["observacao"], "Status": "Aguardando revisão",
+                "Criado Em": now, "Atualizado Em": now,
+            })
+        append_dicts(ws_forecast_review, FORECAST_REVIEW_HEADERS, review_rows)
+        if review_rows:
+            st.success(f"{len(review_rows)} sugestão(ões) criada(s) para revisão.")
+            st.rerun()
+        elif suggestions.empty:
+            st.warning(f"Não encontrei lançamentos operacionais de {review_source_year} para sugerir.")
+        else:
+            st.info("As sugestões deste ano já foram geradas. Você pode revisá-las abaixo.")
+
+    review_records = load_records(ws_forecast_review)
+    target_reviews = [
+        (row_number, row)
+        for row_number, row in enumerate(review_records, start=2)
+        if str(row.get("Ano Destino") or "").strip() == str(review_target_year)
+        and normalize_label(row.get("Status")) not in {"aprovado", "nao incluido"}
+    ]
+    if target_reviews:
+        review_source = pd.DataFrame([{
+            "Decisão": clean_editor_text(row.get("Decisão"), "Pendente"),
+            "Tipo": clean_editor_text(row.get("Tipo"), "Despesa"),
+            "Lançamento": clean_editor_text(row.get("Lançamento")),
+            "Categoria": clean_editor_text(row.get("Categoria"), "OUTRO"),
+            "Valor sugerido": parse_money(row.get("Valor Sugerido (R$)")),
+            "Periodicidade": clean_editor_text(row.get("Periodicidade"), "Anual"),
+            "Primeiro vencimento": clean_editor_date(row.get("Primeiro Vencimento")),
+            "Ocorrências": int(parse_money(row.get("Ocorrências")) or 1),
+            "Dia do vencimento": int(parse_money(row.get("Dia do Vencimento")) or 1),
+            "Envolvido": clean_editor_text(row.get("Envolvido")),
+            "Conta": clean_editor_text(row.get("Conta")),
+            "Natureza": clean_editor_text(row.get("Natureza"), "Operacional"),
+            "Observação": clean_editor_text(row.get("Observação")),
+            "sheet_row": row_number, "review_id": clean_editor_text(row.get("Revisão ID")),
+        } for row_number, row in target_reviews])
+        edited_reviews = st.data_editor(
+            review_source, use_container_width=True, hide_index=True,
+            disabled=["sheet_row", "review_id"],
+            column_config={
+                "Decisão": st.column_config.SelectboxColumn(
+                    options=["Pendente", "Aprovar", "Não incluir"], required=True,
+                ),
+                "Valor sugerido": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
+                "Tipo": st.column_config.SelectboxColumn(options=["Receita", "Despesa"], required=True),
+                "Periodicidade": st.column_config.SelectboxColumn(
+                    options=["Mensal", "Trimestral", "Semestral", "Anual"], required=True,
+                ),
+                "Primeiro vencimento": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                "Ocorrências": st.column_config.NumberColumn(min_value=1, max_value=12, step=1),
+                "Dia do vencimento": st.column_config.NumberColumn(min_value=1, max_value=31, step=1),
+                "sheet_row": None, "review_id": None,
+            },
+            key=f"forecast_review_{review_target_year}",
+        )
+        st.caption(
+            "Você pode ajustar os valores antes de aprovar. Mantenha a decisão como Pendente e salve "
+            "periodicamente para guardar o rascunho."
+        )
+        if st.button("Salvar rascunho e processar decisões", type="primary"):
+            intervals = {"Mensal": 1, "Trimestral": 3, "Semestral": 6, "Anual": 12}
+            existing_forecast_review_ids = {
+                str(row.get("Revisão ID") or "").strip() for row in load_records(ws_forecast)
+            }
+            approved = rejected = pending = invalid = 0
+            now = datetime.now().strftime("%d/%m/%Y %H:%M")
+            review_changes = []
+            approved_forecast_rows = []
+            for _, row in edited_reviews.iterrows():
+                decision = clean_editor_text(row.get("Decisão"), "Pendente")
+                launch_type = clean_editor_text(row.get("Tipo"), "Despesa")
+                description = clean_editor_text(row.get("Lançamento"))
+                category = clean_editor_text(row.get("Categoria"), "OUTRO")
+                involved = clean_editor_text(row.get("Envolvido"))
+                account = clean_editor_text(row.get("Conta"))
+                nature = clean_editor_text(row.get("Natureza"), "Operacional")
+                notes = clean_editor_text(row.get("Observação"))
+                periodicity = clean_editor_text(row.get("Periodicidade"), "Anual")
+                first_due = clean_editor_date(row.get("Primeiro vencimento"))
+                value = parse_money(row.get("Valor sugerido"))
+                occurrences_raw = parse_money(row.get("Ocorrências"))
+                occurrences_value = int(occurrences_raw) if occurrences_raw >= 1 else 1
+                due_day_raw = parse_money(row.get("Dia do vencimento"))
+                due_day = safe_day(int(due_day_raw)) if due_day_raw >= 1 else 1
+                interval = intervals.get(periodicity, 12)
+                updates = {
+                    "Decisão": decision, "Categoria": category,
+                    "Lançamento": description,
+                    "Envolvido": involved, "Conta": account,
+                    "Natureza": nature, "Valor Sugerido (R$)": format_brl(value),
+                    "Periodicidade": periodicity,
+                    "Primeiro Vencimento": first_due.strftime("%d/%m/%Y") if first_due else "",
+                    "Ocorrências": int(occurrences_raw) if occurrences_raw >= 1 else "",
+                    "Dia do Vencimento": int(due_day_raw) if due_day_raw >= 1 else "",
+                    "Observação": notes, "Atualizado Em": now,
+                }
+                review_id = clean_editor_text(row.get("review_id"))
+                if decision == "Aprovar":
+                    last_due = None if first_due is None else date(
+                        first_due.year + ((first_due.month - 1 + (occurrences_value - 1) * interval) // 12),
+                        ((first_due.month - 1 + (occurrences_value - 1) * interval) % 12) + 1, 1,
+                    )
+                    if (
+                        not description or value <= 0 or first_due is None
+                        or not 1 <= occurrences_raw <= 12 or periodicity not in intervals
+                        or not 1 <= due_day_raw <= 31
+                        or first_due.year != review_target_year or last_due.year != review_target_year
+                    ):
+                        updates["Status"] = "Revisão necessária"
+                        invalid += 1
+                    elif review_id not in existing_forecast_review_ids:
+                        _, approved_rows = make_recurrence_rows(
+                            description=description, launch_type=launch_type,
+                            category=category, involved=involved,
+                            planned_value=value, start_date=first_due, occurrences=occurrences_value,
+                            interval_months=interval, due_day=due_day,
+                            account=account, nature=nature,
+                            notes=notes,
+                        )
+                        for approved_row in approved_rows:
+                            approved_row["Revisão ID"] = review_id
+                        approved_forecast_rows.extend(approved_rows)
+                        existing_forecast_review_ids.add(review_id)
+                        updates["Status"] = "Aprovado"
+                        approved += 1
+                    else:
+                        updates["Status"] = "Aprovado"
+                elif decision == "Não incluir":
+                    updates["Status"] = "Não incluído"
+                    rejected += 1
+                else:
+                    updates["Status"] = "Aguardando revisão"
+                    pending += 1
+                review_changes.append((int(row["sheet_row"]), updates))
+            append_dicts(ws_forecast, MAIN_HEADERS, approved_forecast_rows)
+            batch_update_rows(ws_forecast_review, review_changes)
+            if invalid:
+                st.warning(
+                    f"{invalid} sugestão(ões) precisam de ajuste. Confira valor, data e quantidade; "
+                    f"todas as ocorrências devem permanecer em {review_target_year}."
+                )
+            else:
+                st.success(f"Processado: {approved} aprovado(s), {rejected} não incluído(s) e {pending} pendente(s).")
+            st.rerun()
+    else:
+        st.info(f"Não há sugestões pendentes para {review_target_year}.")
+
+    st.markdown("---")
+    st.subheader("Programar lançamentos futuros")
+    st.caption("Crie uma série mensal, trimestral, semestral ou anual. Cada ocorrência poderá ser quitada ou alterada individualmente.")
+    with st.form("forecast_form", clear_on_submit=True):
+        a, b, c = st.columns(3)
+        description = a.text_input("Nome do lançamento")
+        launch_type = b.selectbox("Tipo", ["Despesa", "Receita"])
+        category = c.text_input("Categoria", value="OUTRO")
+        d, e, f = st.columns(3)
+        planned_value = d.number_input("Valor por ocorrência", min_value=0.0, step=100.0)
+        start = e.date_input("Primeiro vencimento", value=date(selected_year, 1, 1), format="DD/MM/YYYY")
+        frequency = f.selectbox("Periodicidade", {"Mensal": 1, "Trimestral": 3, "Semestral": 6, "Anual": 12}.keys())
+        g, h, i = st.columns(3)
+        occurrences = g.number_input("Quantidade de ocorrências", min_value=1, max_value=120, value=12, step=1)
+        due_day = h.number_input("Dia do vencimento", min_value=1, max_value=31, value=start.day, step=1)
+        nature = i.selectbox("Natureza", NATURE_OPTIONS, key="forecast_nature")
+        j, k = st.columns(2)
+        involved = j.text_input("Envolvido")
+        account = k.text_input("Conta")
+        notes = st.text_area("Observações da série")
+        create_series = st.form_submit_button("Criar forecast", type="primary")
+    if create_series:
+        if not description or planned_value <= 0:
+            st.error("Informe o nome e um valor maior que zero.")
+        else:
+            intervals = {"Mensal": 1, "Trimestral": 3, "Semestral": 6, "Anual": 12}
+            series_id, series_rows = make_recurrence_rows(
+                description=description, launch_type=launch_type, category=category, involved=involved,
+                planned_value=planned_value, start_date=start, occurrences=int(occurrences),
+                interval_months=intervals[frequency], due_day=safe_day(due_day), account=account,
+                nature=nature, notes=notes,
+            )
+            append_dicts(ws_forecast, MAIN_HEADERS, series_rows)
+            append_dicts(ws_recurrences, ws_recurrences.row_values(1), [{
+                "Série ID": series_id, "Descrição": description, "Tipo": launch_type, "Categoria": category,
+                "Início": start.strftime("%d/%m/%Y"), "Ocorrências": int(occurrences),
+                "Intervalo em meses": intervals[frequency], "Valor": format_brl(planned_value),
+                "Criado Em": datetime.now().strftime("%d/%m/%Y %H:%M"),
+            }])
+            st.success(f"Forecast criado com {int(occurrences)} ocorrências.")
+
+    st.markdown("---")
+    st.subheader(f"Matriz anual de {selected_year}")
+    st.caption("A matriz mostra somente os valores que ainda faltam receber ou pagar em cada mês.")
+    open_series = open_launches(launches)
+    year_series = open_series[open_series["competencia"].dt.year == selected_year].copy() if not open_series.empty else open_series
+    if year_series.empty:
+        st.info("O forecast deste ano ainda não foi carregado.")
+    else:
+        year_series["mes_num"] = year_series["competencia"].dt.month
+        year_series["_matrix_key"] = year_series.apply(
+            lambda row: (
+                f"SERIE:{row['serie_id']}"
+                if str(row["serie_id"]).strip()
+                else f"REGISTRO:{row['id'] or int(row['sheet_row'])}"
+            ),
+            axis=1,
+        )
+        matrix_details = (
+            year_series.sort_values(["_matrix_key", "competencia", "sheet_row"])
+            .groupby("_matrix_key", as_index=False)
+            .first()[["_matrix_key", "tipo", "historico", "categoria", "envolvido", "natureza"]]
+        )
+        matrix_values = year_series.pivot_table(
+            index="_matrix_key", columns="mes_num", values="pendente", aggfunc="sum", fill_value=0.0
+        ).reset_index()
+        matrix = matrix_details.merge(matrix_values, on="_matrix_key", how="left")
+        for month_number in range(1, 13):
+            if month_number not in matrix:
+                matrix[month_number] = 0.0
+        matrix = matrix[
+            ["_matrix_key", "tipo", "historico", "categoria", "envolvido", "natureza", *range(1, 13)]
+        ].rename(
+            columns={
+                "tipo": "Tipo",
+                "historico": "Lançamento",
+                "categoria": "Categoria",
+                "envolvido": "Envolvido",
+                "natureza": "Natureza",
+                **MESES,
+            }
+        )
+        matrix["_type_order"] = matrix["Tipo"].map(
+            lambda value: 0 if normalize_label(value) == "receita" else 1
+        )
+        matrix["_launch_order"] = matrix["Lançamento"].map(normalize_label)
+        matrix = (
+            matrix.sort_values(["_type_order", "_launch_order"], kind="stable")
+            .drop(columns=["_type_order", "_launch_order"])
+            .reset_index(drop=True)
+        )
+        # A coluna numérica nativa do editor usa o separador definido pelo
+        # navegador e, em alguns computadores, bloqueia a vírgula durante a
+        # digitação. Para a matriz, exibimos o valor como texto monetário e
+        # usamos parse_money ao salvar (que aceita 1.234,56 e 1234.56).
+        matrix_editor_source = matrix.copy()
+        for month_name in MESES.values():
+            matrix_editor_source[month_name] = matrix_editor_source[month_name].map(
+                lambda value: format_brl(parse_money(value)).replace("R$ ", "")
+            )
+
+        matrix_editor_key = f"annual_matrix_editor_{selected_year}"
+        edited_matrix = st.data_editor(
+            matrix_editor_source,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            disabled=["_matrix_key"],
+            column_config={
+                "_matrix_key": None,
+                "Tipo": st.column_config.SelectboxColumn(
+                    options=["Receita", "Despesa"], required=True,
+                ),
+                "Natureza": st.column_config.SelectboxColumn(
+                    options=NATURE_OPTIONS, required=True,
+                ),
+                **{
+                    month_name: st.column_config.TextColumn(
+                        month_name,
+                        help=(
+                            "Informe o valor com vírgula ou ponto nos centavos. "
+                            "Exemplos: 1.234,56 ou 1234.56."
+                        ),
+                    )
+                    for month_name in MESES.values()
+                },
+            },
+            key=matrix_editor_key,
+        )
+        st.caption(
+            "Edite o nome, tipo, categoria, envolvido ou natureza para corrigir a série inteira. "
+            "Use Retirada de lucros para reduzir a sobra sem reduzir o resultado operacional. "
+            "A alteração em um mês afeta somente aquele mês. Use a última linha vazia para incluir um lançamento. "
+            "Para excluir uma série, remova a linha pelo controle da tabela ou apague seu conteúdo e deixe todos os meses zerados."
+        )
+        if st.button("Salvar alterações da matriz", type="primary"):
+            original_by_key = matrix.set_index("_matrix_key")
+            row_updates: dict[int, dict] = {}
+            new_rows: list[dict] = []
+            rows_to_delete: list[int] = []
+            warnings: list[str] = []
+            changed_cells = 0
+            deleted_series = 0
+            created_series = 0
+            now = datetime.now().strftime("%d/%m/%Y %H:%M")
+            generated_series_ids: dict[str, str] = {}
+
+            def queue_update(sheet_row: int, updates: dict) -> None:
+                row_updates.setdefault(int(sheet_row), {}).update(updates)
+
+            edited_existing_keys = {
+                clean_editor_text(row.get("_matrix_key"))
+                for _, row in edited_matrix.iterrows()
+                if clean_editor_text(row.get("_matrix_key")) in original_by_key.index
+            }
+            removed_keys = set(original_by_key.index) - edited_existing_keys
+            for matrix_key in removed_keys:
+                source_rows = year_series[year_series["_matrix_key"] == matrix_key]
+                rows_to_delete.extend(source_rows["sheet_row"].astype(int).tolist())
+                deleted_series += 1
+
+            for _, edited_row in edited_matrix.iterrows():
+                matrix_key = clean_editor_text(edited_row.get("_matrix_key"))
+                month_values = {
+                    month_number: max(parse_money(edited_row.get(month_name)), 0.0)
+                    for month_number, month_name in MESES.items()
+                }
+                edited_description = clean_editor_text(edited_row.get("Lançamento"))
+                edited_category_raw = clean_editor_text(edited_row.get("Categoria"))
+                edited_involved = clean_editor_text(edited_row.get("Envolvido"))
+                edited_nature = clean_editor_text(edited_row.get("Natureza"), "Operacional")
+                row_is_empty = (
+                    not edited_description
+                    and not edited_category_raw
+                    and not edited_involved
+                    and not any(value > 0.005 for value in month_values.values())
+                )
+
+                if matrix_key not in original_by_key.index:
+                    if row_is_empty:
+                        continue
+                    edited_type = clean_editor_text(edited_row.get("Tipo"), "Despesa")
+                    edited_category = edited_category_raw or "OUTRO"
+                    if not edited_description:
+                        warnings.append("Uma nova linha não foi incluída porque está sem nome de lançamento.")
+                        continue
+                    positive_months = {
+                        month_number: value
+                        for month_number, value in month_values.items()
+                        if value > 0.005
+                    }
+                    if not positive_months:
+                        warnings.append(
+                            f"{edited_description}: informe valor em pelo menos um mês para incluir o lançamento."
+                        )
+                        continue
+                    series_id = new_id("SER")
+                    for month_number, edited_value in positive_months.items():
+                        due = date(selected_year, month_number, 1)
+                        new_row = {header: "" for header in MAIN_HEADERS}
+                        new_row.update({
+                            "Mês": MESES[month_number],
+                            "Tipo de Operação": edited_type,
+                            "Categoria": edited_category,
+                            "Corretor / Envolvido": edited_involved,
+                            "Histórico": edited_description,
+                            "Natureza": edited_nature,
+                            "Valor (R$)": format_brl(edited_value),
+                            "Status": "Previsto",
+                            "ID": new_id(),
+                            "Competência": f"{month_number:02d}/{selected_year}",
+                            "Vencimento": due.strftime("%d/%m/%Y"),
+                            "Valor Previsto (R$)": format_brl(edited_value),
+                            "Série ID": series_id,
+                            "Criado Em": now,
+                            "Atualizado Em": now,
+                            "Moeda": "BRL",
+                            "Percentual Considerado": 100,
+                        })
+                        new_rows.append(new_row)
+                    changed_cells += len(positive_months)
+                    created_series += 1
+                    continue
+
+                original_row = original_by_key.loc[matrix_key]
+                source_rows = year_series[year_series["_matrix_key"] == matrix_key].copy()
+                if source_rows.empty:
+                    continue
+
+                edited_type = clean_editor_text(edited_row.get("Tipo"), "Despesa")
+                edited_category = edited_category_raw or "OUTRO"
+                if row_is_empty:
+                    rows_to_delete.extend(source_rows["sheet_row"].astype(int).tolist())
+                    deleted_series += 1
+                    continue
+                if not edited_description:
+                    warnings.append("Há uma linha sem nome de lançamento; ela não foi alterada.")
+                    continue
+
+                common_updates = {}
+                if edited_type != clean_editor_text(original_row.get("Tipo"), "Despesa"):
+                    common_updates["Tipo de Operação"] = edited_type
+                if edited_description != clean_editor_text(original_row.get("Lançamento")):
+                    common_updates["Histórico"] = edited_description
+                if edited_category != clean_editor_text(original_row.get("Categoria"), "OUTRO"):
+                    common_updates["Categoria"] = edited_category
+                if edited_involved != clean_editor_text(original_row.get("Envolvido")):
+                    common_updates["Corretor / Envolvido"] = edited_involved
+                if edited_nature != clean_editor_text(original_row.get("Natureza"), "Operacional"):
+                    common_updates["Natureza"] = edited_nature
+                if common_updates:
+                    common_updates["Atualizado Em"] = now
+                    for sheet_row in source_rows["sheet_row"]:
+                        queue_update(int(sheet_row), common_updates)
+                    changed_cells += len(common_updates) - 1
+
+                for month_number, month_name in MESES.items():
+                    original_value = parse_money(original_row.get(month_name))
+                    edited_value = month_values[month_number]
+                    if abs(edited_value - original_value) <= 0.005:
+                        continue
+                    month_rows = source_rows[source_rows["mes_num"] == month_number]
+                    if len(month_rows) > 1:
+                        warnings.append(
+                            f"{edited_description} em {month_name}: existem registros duplicados; "
+                            "o valor não foi alterado."
+                        )
+                        continue
+                    if len(month_rows) == 1:
+                        launch_row = month_rows.iloc[0]
+                        planned_value = float(launch_row["realizado"]) + edited_value
+                        queue_update(
+                            int(launch_row["sheet_row"]),
+                            {
+                                "Valor (R$)": format_brl(planned_value),
+                                "Valor Previsto (R$)": format_brl(planned_value),
+                                "Atualizado Em": now,
+                            },
+                        )
+                    elif edited_value > 0:
+                        base_row = source_rows.iloc[0]
+                        base_index = int(base_row["sheet_row"]) - 2
+                        base_record = dict(records[base_index]) if 0 <= base_index < len(records) else {}
+                        series_id = clean_editor_text(base_row.get("serie_id"))
+                        if not series_id:
+                            series_id = generated_series_ids.setdefault(str(matrix_key), new_id("SER"))
+                            for sheet_row in source_rows["sheet_row"]:
+                                queue_update(int(sheet_row), {"Série ID": series_id, "Atualizado Em": now})
+                        due_values = source_rows["vencimento"].dropna()
+                        due_day = int(due_values.iloc[0].day) if not due_values.empty else 1
+                        first_day = pd.Timestamp(selected_year, month_number, 1)
+                        due = date(selected_year, month_number, min(due_day, first_day.days_in_month))
+                        new_row = {header: base_record.get(header, "") for header in MAIN_HEADERS}
+                        new_row.update({
+                            "Mês": MESES[month_number],
+                            "Tipo de Operação": edited_type,
+                            "Categoria": edited_category,
+                            "Corretor / Envolvido": edited_involved,
+                            "Histórico": edited_description,
+                            "Natureza": edited_nature,
+                            "Valor (R$)": format_brl(edited_value),
+                            "Status": "Previsto",
+                            "ID": new_id(),
+                            "Competência": f"{month_number:02d}/{selected_year}",
+                            "Vencimento": due.strftime("%d/%m/%Y"),
+                            "Valor Previsto (R$)": format_brl(edited_value),
+                            "Valor Realizado (R$)": "",
+                            "Data Quitação": "",
+                            "Série ID": series_id,
+                            "Criado Em": now,
+                            "Atualizado Em": now,
+                            "Moeda": "BRL",
+                            "Valor na Moeda": "",
+                            "Cotação Utilizada": "",
+                            "Percentual Considerado": 100,
+                        })
+                        new_rows.append(new_row)
+                    changed_cells += 1
+
+            batch_update_rows(ws_forecast, list(row_updates.items()))
+            append_dicts(ws_forecast, MAIN_HEADERS, new_rows)
+            delete_sheet_rows(ws_forecast, rows_to_delete)
+            if warnings:
+                st.warning(" ".join(dict.fromkeys(warnings)))
+            if row_updates or new_rows or rows_to_delete:
+                st.session_state.pop(matrix_editor_key, None)
+                details = [f"{changed_cells} alteração(ões) salva(s)"]
+                if created_series:
+                    details.append(f"{created_series} nova(s) linha(s) incluída(s)")
+                if deleted_series:
+                    details.append(f"{deleted_series} linha(s) excluída(s)")
+                st.success("Matriz atualizada: " + ", ".join(details) + ".")
+                st.rerun()
+            elif not warnings:
+                st.info("Nenhuma alteração foi identificada na matriz.")
+
+        st.subheader(f"Resumo mensal do forecast de {selected_year}")
+        st.caption(
+            "Os valores abaixo vêm dos mesmos lançamentos da matriz e são atualizados "
+            "sempre que uma receita ou despesa é alterada."
+        )
+        monthly_summary = monthly[
+            ["mes", "receitas", "despesas", "retiradas", "resultado", "movimento_caixa"]
+        ].rename(
+            columns={
+                "mes": "Mês",
+                "receitas": "Receitas previstas",
+                "despesas": "Despesas previstas",
+                "retiradas": "Retiradas de lucros",
+                "resultado": "Resultado previsto",
+                "movimento_caixa": "Resultado após retiradas",
+            }
+        )
+        display_money_table(
+            monthly_summary,
+            [
+                "Receitas previstas",
+                "Despesas previstas",
+                "Retiradas de lucros",
+                "Resultado previsto",
+                "Resultado após retiradas",
+            ],
+        )
+
+        annual_income = float(monthly["receitas"].sum())
+        annual_expense = float(monthly["despesas"].sum())
+        annual_withdrawals = float(monthly["retiradas"].sum())
+        annual_result = annual_income - annual_expense
+        annual_after_withdrawals = annual_result - annual_withdrawals
+        st.subheader(f"Fechamento anual de {selected_year}")
+        annual_cards = [
+            ("Receitas previstas no ano", annual_income),
+            ("Despesas previstas no ano", annual_expense),
+            ("Retiradas previstas no ano", annual_withdrawals),
+            ("Resultado previsto no ano", annual_result),
+            ("Resultado após retiradas", annual_after_withdrawals),
+        ]
+        cards_html = "".join(
+            '<div class="annual-summary-card">'
+            f'<div class="annual-summary-label">{label}</div>'
+            f'<div class="annual-summary-value">{format_brl(value)}</div>'
+            "</div>"
+            for label, value in annual_cards
+        )
+        st.markdown(
+            f'<div class="annual-summary-grid">{cards_html}</div>',
+            unsafe_allow_html=True,
+        )
+        if annual_after_withdrawals >= 0:
+            st.caption(
+                "Sobra informativa após as retiradas de lucros programadas: "
+                f"{format_brl(annual_after_withdrawals)}."
+            )
+        else:
+            st.caption(
+                "Falta informativa após as retiradas de lucros programadas: "
+                f"{format_brl(abs(annual_after_withdrawals))}."
+            )
+
+    st.subheader("Alterar valores a partir de um mês")
+    editable_series = year_series[year_series["serie_id"].astype(str).str.strip() != ""] if not year_series.empty else year_series
+    if editable_series.empty:
+        st.info("Não há séries editáveis neste ano.")
+    else:
+        series_labels = (
+            editable_series.sort_values(["historico", "competencia"])
+            .drop_duplicates("serie_id")
+            .set_index("serie_id")["historico"]
+            .to_dict()
+        )
+        with st.form("adjust_series"):
+            selected_series = st.selectbox(
+                "Lançamento",
+                list(series_labels),
+                format_func=lambda item: series_labels[item],
+            )
+            a, b = st.columns(2)
+            change_month = a.selectbox("Alterar a partir do mês", list(MESES), format_func=lambda item: MESES[item])
+            new_value = b.number_input("Novo valor por mês", min_value=0.0, step=100.0)
+            apply_change = st.form_submit_button("Aplicar aos meses seguintes", type="primary")
+        if apply_change:
+            cutoff = pd.Timestamp(selected_year, change_month, 1)
+            series_rows = editable_series[
+                (editable_series["serie_id"] == selected_series)
+                & (editable_series["competencia"].dt.year == selected_year)
+            ].copy()
+            now = datetime.now().strftime("%d/%m/%Y %H:%M")
+            changes: list[tuple[int, dict]] = []
+            missing_rows: list[dict] = []
+            duplicate_months: list[str] = []
+            base_row = series_rows.sort_values(["competencia", "sheet_row"]).iloc[0]
+            base_index = int(base_row["sheet_row"]) - 2
+            base_record = dict(records[base_index]) if 0 <= base_index < len(records) else {}
+            due_values = series_rows["vencimento"].dropna()
+            due_day = int(due_values.iloc[0].day) if not due_values.empty else 1
+
+            for month_number in range(change_month, 13):
+                month_rows = series_rows[series_rows["competencia"].dt.month == month_number]
+                if len(month_rows) > 1:
+                    duplicate_months.append(MESES[month_number])
+                if not month_rows.empty:
+                    for _, row in month_rows.iterrows():
+                        changes.append((int(row["sheet_row"]), {
+                            "Valor (R$)": format_brl(new_value),
+                            "Valor Previsto (R$)": format_brl(new_value),
+                            "Atualizado Em": now,
+                        }))
+                    continue
+                if new_value <= 0:
+                    continue
+                first_day = pd.Timestamp(selected_year, month_number, 1)
+                due = date(selected_year, month_number, min(due_day, first_day.days_in_month))
+                new_row = {header: base_record.get(header, "") for header in MAIN_HEADERS}
+                new_row.update({
+                    "Mês": MESES[month_number],
+                    "Valor (R$)": format_brl(new_value),
+                    "Status": "Previsto",
+                    "ID": new_id(),
+                    "Competência": f"{month_number:02d}/{selected_year}",
+                    "Vencimento": due.strftime("%d/%m/%Y"),
+                    "Valor Previsto (R$)": format_brl(new_value),
+                    "Valor Realizado (R$)": "",
+                    "Data Quitação": "",
+                    "Série ID": selected_series,
+                    "Criado Em": now,
+                    "Atualizado Em": now,
+                })
+                missing_rows.append(new_row)
+
+            batch_update_rows(ws_forecast, changes)
+            append_dicts(ws_forecast, MAIN_HEADERS, missing_rows)
+            if duplicate_months:
+                st.warning(
+                    "A série possui mais de um registro em "
+                    + ", ".join(duplicate_months)
+                    + "; todos foram atualizados."
+                )
+            total_months = len({
+                int(row["competencia"].month)
+                for _, row in series_rows[series_rows["competencia"] >= cutoff].iterrows()
+            }) + len(missing_rows)
+            if changes or missing_rows:
+                st.toast(
+                    f"{total_months} mês(es) ajustado(s): "
+                    f"{len(changes)} registro(s) atualizado(s) e {len(missing_rows)} criado(s)."
+                )
+                st.rerun()
+            else:
+                st.info("Nenhum registro precisou ser alterado.")
+
+with tab_works:
+    st.subheader("Controle de obras")
+    st.caption(
+        "O valor que falta pagar aos prestadores atualiza automaticamente o saldo "
+        "Acertos de obras pendentes e reduz a sobra disponível para distribuição."
+    )
+    st.info(
+        "Os pagamentos informados aqui não alteram o saldo bancário. Depois de pagar o prestador, "
+        "atualize manualmente o banco na aba Saldos."
+    )
+
+    work_monthly = monthly_work_summary(works, selected_year)
+    default_work_month = today.month if selected_year == today.year else 1
+    work_month = st.selectbox(
+        "Mês das obras",
+        list(MESES),
+        index=default_work_month - 1,
+        format_func=lambda item: MESES[item],
+        key="work_month",
+    )
+    work_summary = work_monthly.iloc[work_month - 1]
+    selected_works = works_for_month(works, selected_year, work_month)
+    displayed_payable = construction_payables(selected_works)
+    w1, w2, w3, w4 = st.columns(4)
+    w1.metric("Valor cobrado", format_brl(work_summary["cobrado"]))
+    w2.metric("Custo previsto", format_brl(work_summary["custo_previsto"]))
+    w3.metric("Lucro previsto", format_brl(work_summary["lucro_previsto"]))
+    w4.metric("Falta pagar (inclui anteriores)", format_brl(displayed_payable))
+
+    st.subheader("Obras do mês e pendências anteriores")
+    st.caption(
+        "As obras de meses anteriores permanecem aqui enquanto houver saldo a pagar ao prestador. "
+        "A competência original e o histórico mensal não são alterados."
+    )
+    if selected_works.empty:
+        st.info("Nenhuma obra cadastrada neste mês e nenhuma pendência anterior.")
+    else:
+        selected_works["pendencia_anterior"] = selected_works["competencia"] < pd.Timestamp(
+            selected_year, work_month, 1
+        )
+        selected_works = selected_works.sort_values(
+            ["pendencia_anterior", "competencia", "status", "obra"],
+            ascending=[False, True, True, True],
+        ).reset_index(drop=True)
+        works_editor_source = pd.DataFrame({
+            "Competência original": selected_works["competencia"].dt.strftime("%m/%Y"),
+            "Obra": selected_works["obra"],
+            "Cliente": selected_works["cliente"],
+            "Valor cobrado": selected_works["cobrado"].astype(float),
+            "Valor recebido": selected_works["recebido"].astype(float),
+            "A receber": selected_works["a_receber"].astype(float),
+            "Prestador": selected_works["prestador"],
+            "PIX do prestador": selected_works["pix"],
+            "Custo previsto": selected_works["custo_previsto"].astype(float),
+            "Valor pago": selected_works["pago"].astype(float),
+            "Falta pagar": selected_works["falta_pagar"].astype(float),
+            "Lucro previsto": selected_works["lucro_previsto"].astype(float),
+            "Status": selected_works["status"],
+            "Observação": selected_works["observacao"],
+            "sheet_row": selected_works["sheet_row"].astype(int),
+        })
+        edited_works = st.data_editor(
+            works_editor_source,
+            use_container_width=True,
+            hide_index=True,
+            disabled=["Competência original", "A receber", "Falta pagar", "Lucro previsto", "sheet_row"],
+            column_config={
+                "Valor cobrado": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
+                "Valor recebido": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
+                "A receber": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Custo previsto": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
+                "Valor pago": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
                 "Falta pagar": st.column_config.NumberColumn(format="R$ %.2f"),
                 "Lucro previsto": st.column_config.NumberColumn(format="R$ %.2f"),
                 "Status": st.column_config.SelectboxColumn(
@@ -2351,4 +3287,3 @@ with tab_settings:
     d1.metric("Total distribuível", format_brl(distributable))
     d2.metric("Sócio 1", format_brl(max(distributable, 0) * parameters["percentual_socio_1"] / 100))
     d3.metric("Sócio 2", format_brl(max(distributable, 0) * parameters["percentual_socio_2"] / 100))
-
