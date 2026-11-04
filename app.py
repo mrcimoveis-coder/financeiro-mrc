@@ -921,9 +921,79 @@ def achieved_goal_value(goal: dict, launches_df: pd.DataFrame, year: int, refere
     return float(selected["realizado"].sum())
 
 
+DEFAULT_CATEGORIES = (
+    "SALÁRIO", "GESTÃO - TI", "DESPESA ADM", "COMERCIAL", "BANCO",
+    "IMPOSTOS", "PRÓ-LABORE", "LIMPEZA", "COMISSÕES", "INTERNET E TELEFONIA",
+    "RETIRADA", "ALUGUÉIS", "PARCELAMENTOS", "RENDIMENTOS FINANCEIROS",
+)
+CATEGORY_HEADERS = ["Categoria"]
+CREATE_CATEGORY = "Criar nova categoria"
+
+
+def category_name(value):
+    return " ".join(str(value or "").split())
+
+
+def resolve_category(value, options):
+    return next((name for name in options if normalize_label(name) == normalize_label(category_name(value))), "")
+
+
+def save_category(value):
+    value = category_name(value)
+    if not value or not value[0].isalnum() or normalize_label(value) in {
+        normalize_label(item) for item in ("OUTRO", "RECEITA", "DESPESA", "A classificar", CREATE_CATEGORY)
+    }:
+        return ""
+    existing = resolve_category(value, category_options)
+    if existing:
+        return existing
+    ws_categories.append_row([value], value_input_option="RAW")
+    return value
+
+
+def suggest_category(description):
+    label = normalize_label(description)
+    for prefix, name in (
+        ("salario", "SALÁRIO"), ("comissao", "COMISSÕES"),
+        ("imposto", "IMPOSTOS"), ("inss", "IMPOSTOS"),
+        ("superlogica - software", "GESTÃO - TI"), ("google mensal", "GESTÃO - TI"),
+        ("telefone net", "INTERNET E TELEFONIA"), ("tarifa bancaria", "BANCO"),
+        ("aluguel sala", "ALUGUÉIS"), ("receita mensal de aluguel", "ALUGUÉIS"),
+        ("parcelamento", "PARCELAMENTOS"), ("rendimento aplicacao", "RENDIMENTOS FINANCEIROS"),
+    ):
+        if label.startswith(prefix):
+            return name
+    return ""
+
+
+def show_category_error(description):
+    st.error("Selecione uma categoria cadastrada ou informe um nome válido para criar uma.")
+    suggestion = suggest_category(description)
+    if suggestion:
+        st.info(f"Categoria sugerida para {description}: {suggestion}. Confirme na lista ou escolha outra.")
+
+
+def category_fields(column, key):
+    selected = column.selectbox(
+        "Categoria", [*category_options, CREATE_CATEGORY], index=None, key=f"{key}_category"
+    )
+    new_name = column.text_input(
+        "Nome da nova categoria", key=f"{key}_new_category",
+        help="Preencha este campo se selecionar Criar nova categoria.",
+    )
+    return selected, new_name
+
+
 login()
 
 try:
+    ws_categories = worksheet("Categorias_Financeiras", CATEGORY_HEADERS, 100)
+    catalog = {}
+    for name in (*DEFAULT_CATEGORIES, *ws_categories.col_values(1)[1:]):
+        name = category_name(name)
+        if name:
+            catalog.setdefault(normalize_label(name), name)
+    category_options = sorted(catalog.values(), key=normalize_label)
     ws_history = main_sheet()
     ws_forecast = worksheet("Forecast", MAIN_HEADERS, 2000)
     ws_balances = worksheet("Saldos_Manuais", BALANCE_HEADERS, 100)
@@ -1026,8 +1096,8 @@ with st.sidebar:
 st.title("💰 Previsão financeira — MRC Imóveis")
 st.caption("O saldo bancário representa o que já aconteceu. Somente receitas e despesas ainda abertas alteram a projeção futura.")
 
-tab_summary, tab_pending, tab_launch, tab_forecast, tab_works, tab_sales, tab_withdrawals, tab_balances, tab_history, tab_adjustments, tab_settings = st.tabs(
-    ["Resumo", "Pendências", "Novo lançamento", "Forecast", "Obras", "Vendas", "Retiradas", "Saldos", "Histórico", "Acertos", "Configurações"]
+tab_summary, tab_pending, tab_launch, tab_forecast, tab_works, tab_sales, tab_withdrawals, tab_balances, tab_history, tab_adjustments, tab_settings, tab_analysis = st.tabs(
+    ["Resumo", "Pendências", "Novo lançamento", "Forecast", "Obras", "Vendas", "Retiradas", "Saldos", "Histórico", "Acertos", "Configurações", "Receitas e Despesas"]
 )
 
 monthly = monthly_forecast(launches, selected_year)
@@ -1407,11 +1477,11 @@ with tab_pending:
 
 with tab_launch:
     st.subheader("Cadastrar receita ou despesa")
-    with st.form("new_launch", clear_on_submit=True):
+    with st.form("new_launch", clear_on_submit=False):
         a, b, c = st.columns(3)
         launch_type = a.radio("Tipo", ["Despesa", "Receita"], horizontal=True)
         description = b.text_input("Descrição")
-        category = c.text_input("Categoria", value="OUTRO")
+        category, new_category = category_fields(c, "launch")
         d, e, f = st.columns(3)
         due = d.date_input("Vencimento", value=today, format="DD/MM/YYYY")
         currency = e.selectbox("Moeda", ["BRL", "USD"])
@@ -1434,6 +1504,8 @@ with tab_launch:
     if submit_launch:
         if not description or amount <= 0:
             st.error("Informe a descrição e um valor maior que zero.")
+        elif not (category := save_category(new_category) if category == CREATE_CATEGORY else resolve_category(category, category_options)):
+            show_category_error(description)
         else:
             quote, quote_date = ptax_sale(today)
             percent = parameters["percentual_usd"]
@@ -1541,6 +1613,7 @@ with tab_forecast:
                 "Decisão": st.column_config.SelectboxColumn(
                     options=["Pendente", "Aprovar", "Não incluir"], required=True,
                 ),
+                "Categoria": st.column_config.SelectboxColumn(options=category_options),
                 "Valor sugerido": st.column_config.NumberColumn(min_value=0.0, format="R$ %.2f"),
                 "Tipo": st.column_config.SelectboxColumn(options=["Receita", "Despesa"], required=True),
                 "Periodicidade": st.column_config.SelectboxColumn(
@@ -1602,6 +1675,7 @@ with tab_forecast:
                     )
                     if (
                         not description or value <= 0 or first_due is None
+                        or category not in category_options
                         or not 1 <= occurrences_raw <= 12 or periodicity not in intervals
                         or not 1 <= due_day_raw <= 31
                         or first_due.year != review_target_year or last_due.year != review_target_year
@@ -1645,14 +1719,23 @@ with tab_forecast:
     else:
         st.info(f"Não há sugestões pendentes para {review_target_year}.")
 
+    with st.expander("Cadastrar categoria para a matriz e as sugestões"):
+        with st.form("forecast_category_catalog"):
+            category_to_add = st.text_input("Nome da categoria")
+            add_category = st.form_submit_button("Cadastrar categoria")
+        if add_category:
+            if save_category(category_to_add):
+                st.rerun()
+            st.error("Informe um nome de categoria válido.")
+
     st.markdown("---")
     st.subheader("Programar lançamentos futuros")
     st.caption("Crie uma série mensal, trimestral, semestral ou anual. Cada ocorrência poderá ser quitada ou alterada individualmente.")
-    with st.form("forecast_form", clear_on_submit=True):
+    with st.form("forecast_form", clear_on_submit=False):
         a, b, c = st.columns(3)
         description = a.text_input("Nome do lançamento")
         launch_type = b.selectbox("Tipo", ["Despesa", "Receita"])
-        category = c.text_input("Categoria", value="OUTRO")
+        category, new_category = category_fields(c, "forecast")
         d, e, f = st.columns(3)
         planned_value = d.number_input("Valor por ocorrência", min_value=0.0, step=100.0)
         start = e.date_input("Primeiro vencimento", value=date(selected_year, 1, 1), format="DD/MM/YYYY")
@@ -1669,6 +1752,8 @@ with tab_forecast:
     if create_series:
         if not description or planned_value <= 0:
             st.error("Informe o nome e um valor maior que zero.")
+        elif not (category := save_category(new_category) if category == CREATE_CATEGORY else resolve_category(category, category_options)):
+            show_category_error(description)
         else:
             intervals = {"Mensal": 1, "Trimestral": 3, "Semestral": 6, "Anual": 12}
             series_id, series_rows = make_recurrence_rows(
@@ -1747,6 +1832,15 @@ with tab_forecast:
             )
 
         matrix_editor_key = f"annual_matrix_editor_{selected_year}"
+        review_categories = matrix_editor_source.loc[
+            ~matrix_editor_source["Categoria"].isin(category_options), ["Lançamento", "Categoria"]
+        ].copy()
+        if not review_categories.empty:
+            review_categories["Sugestão"] = review_categories["Lançamento"].map(suggest_category)
+            with st.expander("Sugestões para classificar séries existentes"):
+                st.dataframe(review_categories, hide_index=True, use_container_width=True)
+                st.caption("Confirme ou corrija a categoria na matriz e salve para aplicar à série.")
+
         edited_matrix = st.data_editor(
             matrix_editor_source,
             use_container_width=True,
@@ -1755,6 +1849,7 @@ with tab_forecast:
             disabled=["_matrix_key"],
             column_config={
                 "_matrix_key": None,
+                "Categoria": st.column_config.SelectboxColumn(options=category_options),
                 "Tipo": st.column_config.SelectboxColumn(
                     options=["Receita", "Despesa"], required=True,
                 ),
@@ -1836,6 +1931,9 @@ with tab_forecast:
                         for month_number, value in month_values.items()
                         if value > 0.005
                     }
+                    if edited_category not in category_options:
+                        warnings.append(f"{edited_description}: selecione ou cadastre uma categoria antes de incluir a linha.")
+                        continue
                     if not positive_months:
                         warnings.append(
                             f"{edited_description}: informe valor em pelo menos um mês para incluir o lançamento."
@@ -1882,6 +1980,15 @@ with tab_forecast:
                     continue
                 if not edited_description:
                     warnings.append("Há uma linha sem nome de lançamento; ela não foi alterada.")
+                    continue
+
+                category_changed = edited_category != clean_editor_text(original_row.get("Categoria"), "OUTRO")
+                creates_occurrence = any(
+                    value > 0.005 and month not in source_rows["mes_num"].values
+                    for month, value in month_values.items()
+                )
+                if (category_changed or creates_occurrence) and edited_category not in category_options:
+                    warnings.append(f"{edited_description}: selecione ou cadastre uma categoria válida.")
                     continue
 
                 common_updates = {}
@@ -2765,6 +2872,8 @@ with tab_history:
             if save_correction:
                 if not correction_reason.strip():
                     st.error("Informe o motivo da correção ou exclusão para manter a rastreabilidade.")
+                elif not delete_launch and corrected_category.strip() != str(correction["categoria"]) and corrected_category.strip() not in category_options:
+                    st.error("Use uma categoria cadastrada. Novas categorias podem ser criadas no Forecast.")
                 elif delete_launch:
                     now = datetime.now().strftime("%d/%m/%Y %H:%M")
                     target_ws = ws_history if correction["origem"] == "Histórico" else ws_forecast
@@ -3283,3 +3392,68 @@ with tab_settings:
     d1.metric("Total distribuível", format_brl(distributable))
     d2.metric("Sócio 1", format_brl(max(distributable, 0) * parameters["percentual_socio_1"] / 100))
     d3.metric("Sócio 2", format_brl(max(distributable, 0) * parameters["percentual_socio_2"] / 100))
+
+
+with tab_analysis:
+    st.header("Receitas e Despesas")
+    st.caption(f"Competências de {selected_year} • lançamentos do Financeiro")
+    month_filter, type_filter, amount_filter, nature_filter = st.columns(4)
+    months = month_filter.multiselect("Mês", list(MESES.values()), key="analysis_month")
+    kind = type_filter.radio("Tipo", ["Despesa", "Receita"], horizontal=True, key="analysis_type")
+    metric = amount_filter.radio("Valores", ["Realizado", "Pendente"], horizontal=True, key="analysis_metric")
+
+    natures = nature_filter.multiselect("Natureza", NATURE_OPTIONS, key="analysis_nature")
+
+    detail = realization_tracking(combined_history)
+    if detail.empty:
+        st.info("Não há lançamentos para analisar.")
+    else:
+        value_field = metric.lower()
+        detail = detail[
+            (detail["competencia"].dt.year == selected_year)
+            & detail["tipo"].eq(kind)
+            & detail[value_field].gt(0)
+        ].copy()
+        if months:
+            detail = detail[detail["competencia"].dt.month.map(MESES).isin(months)]
+        if natures:
+            detail = detail[detail["natureza"].isin(natures)]
+        detail["grupo"] = detail["categoria"].map(
+            lambda value: resolve_category(value, category_options) or "A classificar"
+        )
+        period_total = detail[value_field].sum()
+        f1, f2, f3 = st.columns(3)
+        groups = f1.multiselect("Categoria", sorted(detail["grupo"].unique()), key="analysis_category")
+        people = f2.multiselect("Envolvido", sorted(detail.loc[detail["envolvido"].ne(""), "envolvido"].unique()), key="analysis_people")
+        search = f3.text_input("Buscar descrição", key="analysis_search").strip()
+        if groups:
+            detail = detail[detail["grupo"].isin(groups)]
+        if people:
+            detail = detail[detail["envolvido"].isin(people)]
+        if search:
+            detail = detail[detail["historico"].str.contains(search, case=False, regex=False, na=False)]
+
+        subtotal = detail[value_field].sum()
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total do período", format_brl(period_total))
+        m2.metric("Total filtrado", format_brl(subtotal))
+        m3.metric("Participação no período", f"{subtotal / period_total:.1%}" if period_total else "—")
+        if detail.empty:
+            st.info("Nenhum lançamento corresponde aos filtros.")
+        else:
+            detail["Mês"] = detail["competencia"].dt.strftime("%m/%Y")
+            by_month = detail.groupby(["Mês", "grupo"], as_index=False)[value_field].sum()
+            st.bar_chart(by_month, x="Mês", y=value_field, color="grupo", stack=True)
+            breakdown = detail.groupby("grupo", as_index=False)[value_field].sum().sort_values(value_field, ascending=False)
+            breakdown["% do período"] = breakdown[value_field].map(lambda value: f"{value / period_total:.1%}")
+            display_money_table(breakdown.rename(columns={"grupo": "Categoria"}), [value_field])
+            st.subheader("Lançamentos")
+            columns = {
+                "Mês": "Mês", "grupo": "Categoria", "categoria": "Categoria original",
+                "historico": "Histórico", "envolvido": "Envolvido", "natureza": "Natureza",
+                "previsto": "Previsto", "realizado": "Realizado", "pendente": "Pendente",
+            }
+            display_money_table(
+                detail.sort_values(value_field, ascending=False)[list(columns)].rename(columns=columns),
+                ["Previsto", "Realizado", "Pendente"],
+            )
