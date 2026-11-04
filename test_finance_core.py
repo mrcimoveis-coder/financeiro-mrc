@@ -308,6 +308,13 @@ class PartialRealizationTests(unittest.TestCase):
         self.assertEqual(january["despesas_realizadas"], 70_000)
         self.assertEqual(january["resultado_realizado"], 30_000)
 
+    def test_paid_rows_without_a_realized_value_use_the_planned_value(self):
+        paid_expense = launch("Pró-labore", "Despesa", 28_000, "", "Pago")
+
+        october = monthly_realized_history(normalize_launches([paid_expense]), 2026).iloc[8]
+
+        self.assertEqual(october["despesas_realizadas"], 28_000)
+
     def test_balance_liabilities_reduce_distribution_when_positive(self):
         self.assertTrue(is_advance_customer_payment_balance("Boletos pagos adiantados"))
         self.assertTrue(is_pending_construction_adjustment_balance("Acertos de obras pendentes"))
