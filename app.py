@@ -679,7 +679,7 @@ def display_money_table(frame: pd.DataFrame, columns: list[str]) -> None:
     view = frame.copy()
     for column in columns:
         if column in view:
-            view[column] = view[column].map(format_brl)
+            view[column] = view[column].map(format_brl, na_action="ignore")
     st.dataframe(view, use_container_width=True, hide_index=True)
 
 
@@ -3405,7 +3405,13 @@ with tab_analysis:
     natures = nature_filter.multiselect("Natureza", NATURE_OPTIONS, key="analysis_nature")
 
     detail = realization_tracking(combined_history)
-    if detail.empty:
+    if detail.empty and not withdrawals.empty:
+        detail = pd.DataFrame({
+            "competencia": pd.Series(dtype="datetime64[ns]"),
+            **{column: pd.Series(dtype=str) for column in ("tipo", "categoria", "historico", "envolvido", "natureza")},
+            **{column: pd.Series(dtype=float) for column in ("previsto", "realizado", "pendente")},
+        })
+    if detail.empty and withdrawals.empty:
         st.info("Não há lançamentos para analisar.")
     else:
         value_field = metric.lower()
@@ -3414,13 +3420,54 @@ with tab_analysis:
             & detail["tipo"].eq(kind)
             & detail[value_field].gt(0)
         ].copy()
+        detail["grupo"] = detail["categoria"].map(
+            lambda value: resolve_category(value, category_options) or "A classificar"
+        )
+        if kind == "Despesa" and metric == "Realizado" and not withdrawals.empty:
+            st.caption("Pró-labore e retiradas realizados vêm do controle de sócios, como no Resumo.")
+            cutoff = detail["competencia"].dt.month.le(withdrawal_month_limit)
+            categories = detail["categoria"].map(normalize_label)
+            descriptions = detail["historico"].map(normalize_label)
+            partner_entries = (
+                categories.isin({"pro-labore", "pro labore", "retirada", "retirada adicional"})
+                | detail["natureza"].map(is_profit_withdrawal_nature)
+                | descriptions.str.match(r"^(pro[- ]labore|retirada[s]? (de lucro|de socio|socio|lucro|adiciona))")
+            )
+            # The partner ledger owns these realized amounts in the same period as the summary.
+            detail = detail.loc[~(cutoff & partner_entries)]
+            if withdrawal_month_limit:
+                partner_months = withdrawals.loc[
+                    withdrawals["competencia"].dt.year.eq(selected_year)
+                    & withdrawals["competencia"].dt.month.le(withdrawal_month_limit)
+                ]
+                partner_detail = partner_months.melt(
+                    id_vars="competencia", value_vars=["pro_labore", "lucros", "adicional"],
+                    var_name="rubrica", value_name="realizado",
+                )
+                partner_detail = partner_detail.loc[partner_detail["realizado"].gt(0)].copy()
+                partner_detail["grupo"] = partner_detail["rubrica"].map({
+                    "pro_labore": "PRÓ-LABORE",
+                    "lucros": "RETIRADA",
+                    "adicional": "RETIRADA ADICIONAL",
+                })
+                partner_detail["historico"] = partner_detail["rubrica"].map({
+                    "pro_labore": "Pró-labore dos sócios",
+                    "lucros": "Retirada de lucros",
+                    "adicional": "Retirada adicional",
+                })
+                partner_detail["natureza"] = partner_detail["rubrica"].map({
+                    "pro_labore": "Operacional",
+                    "lucros": "Retirada de lucros",
+                    "adicional": "Retirada de lucros",
+                })
+                partner_detail = partner_detail.assign(
+                    categoria="Controle de retiradas", envolvido="", previsto=float("nan"), pendente=0.0,
+                )
+                detail = pd.concat([detail, partner_detail], ignore_index=True)
         if months:
             detail = detail[detail["competencia"].dt.month.map(MESES).isin(months)]
         if natures:
             detail = detail[detail["natureza"].isin(natures)]
-        detail["grupo"] = detail["categoria"].map(
-            lambda value: resolve_category(value, category_options) or "A classificar"
-        )
         period_total = detail[value_field].sum()
         f1, f2, f3 = st.columns(3)
         groups = f1.multiselect("Categoria", sorted(detail["grupo"].unique()), key="analysis_category")
