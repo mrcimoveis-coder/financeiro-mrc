@@ -514,7 +514,10 @@ def normalize_launches(records: list[dict], default_year: int = 2026) -> pd.Data
         actual = parse_money(record.get("Valor Realizado (R$)"))
         raw_status = str(record.get("Status") or "").strip().lower()
         status = normalize_status(raw_status)
-        if raw_status == "confirmado" and actual == 0:
+        # A baixa sem valor informado deve registrar o valor previsto. Isso também
+        # recupera lançamentos históricos marcados como Pago/Recebido antes dessa
+        # regra estar protegida na interface.
+        if actual == 0 and planned > 0 and (raw_status == "confirmado" or status == "Quitado"):
             actual = planned
         launch_type = normalize_type(record.get("Tipo de Operação"))
         currency = str(record.get("Moeda") or "BRL").strip().upper()
